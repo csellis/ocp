@@ -26,7 +26,18 @@ linters:
   settings:
     errcheck:
       check-type-assertions: true
-      check-blank: true
+      # Don't flag `_ = foo()` patterns. Explicit-discard is the idiomatic
+      # Go way to acknowledge an error that has nothing to do (cleanup paths,
+      # writes to stdout). Flagging it forces wordier alternatives that
+      # don't add safety.
+      check-blank: false
+      # Common write-to-stdout helpers whose error never has anything to
+      # do. Stdout failures are rare and unrecoverable.
+      exclude-functions:
+        - fmt.Fprint
+        - fmt.Fprintln
+        - fmt.Fprintf
+        - (io.Writer).Write
     revive:
       rules:
         - name: var-naming

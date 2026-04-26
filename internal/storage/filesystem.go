@@ -51,7 +51,7 @@ func (fs *Filesystem) SaveGlossary(_ context.Context, _ RepoID, g Glossary) erro
 	if err := os.MkdirAll(fs.ocpDir(), 0o755); err != nil {
 		return fmt.Errorf("mkdir .ocp: %w", err)
 	}
-	return atomicWrite(fs.glossaryPath(), serializeGlossary(g))
+	return atomicWrite(fs.glossaryPath(), g.Markdown())
 }
 
 // AppendLog uses read-modify-write rather than O_APPEND so every on-disk
@@ -210,7 +210,10 @@ func parseGlossary(raw []byte) Glossary {
 	return g
 }
 
-func serializeGlossary(g Glossary) []byte {
+// Markdown serializes a Glossary to its on-disk markdown form. The
+// inverse of parseGlossary; round-trips losslessly for any value
+// produced by parsing or by direct construction.
+func (g Glossary) Markdown() []byte {
 	var b strings.Builder
 	b.WriteString("# Glossary\n\n")
 	for _, t := range g.Terms {
