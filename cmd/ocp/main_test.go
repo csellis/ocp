@@ -64,7 +64,7 @@ func TestSeedRoundTrip(t *testing.T) {
 func TestRunScan_FirstRunSeeds(t *testing.T) {
 	root := t.TempDir()
 	var buf bytes.Buffer
-	if err := runScan(context.Background(), &buf, root); err != nil {
+	if err := runScan(context.Background(), &buf, root, fixedNow); err != nil {
 		t.Fatalf("runScan: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(root, ".ocp", "glossary.md")); err != nil {
@@ -82,11 +82,11 @@ func TestRunScan_FirstRunSeeds(t *testing.T) {
 func TestRunScan_SecondRunLoads(t *testing.T) {
 	root := t.TempDir()
 	ctx := context.Background()
-	if err := runScan(ctx, &bytes.Buffer{}, root); err != nil {
+	if err := runScan(ctx, &bytes.Buffer{}, root, fixedNow); err != nil {
 		t.Fatalf("first runScan: %v", err)
 	}
 	var buf bytes.Buffer
-	if err := runScan(ctx, &buf, root); err != nil {
+	if err := runScan(ctx, &buf, root, fixedNow); err != nil {
 		t.Fatalf("second runScan: %v", err)
 	}
 	out := buf.String()
@@ -111,7 +111,7 @@ func TestRunDrift_NoGlossary(t *testing.T) {
 
 func TestRunDrift_NoHits(t *testing.T) {
 	root := t.TempDir()
-	if err := runScan(context.Background(), &bytes.Buffer{}, root); err != nil {
+	if err := runScan(context.Background(), &bytes.Buffer{}, root, fixedNow); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 	var buf bytes.Buffer
@@ -126,7 +126,7 @@ func TestRunDrift_NoHits(t *testing.T) {
 func TestRunDrift_FilesObservations(t *testing.T) {
 	root := t.TempDir()
 	ctx := context.Background()
-	if err := runScan(ctx, &bytes.Buffer{}, root); err != nil {
+	if err := runScan(ctx, &bytes.Buffer{}, root, fixedNow); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 	// Two synonyms, both of canonical "glossary": one observation each,
@@ -184,7 +184,7 @@ func TestRunDrift_FilesObservations(t *testing.T) {
 func TestRunDrift_Idempotent(t *testing.T) {
 	root := t.TempDir()
 	ctx := context.Background()
-	if err := runScan(ctx, &bytes.Buffer{}, root); err != nil {
+	if err := runScan(ctx, &bytes.Buffer{}, root, fixedNow); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 	writeTestFile(t, root, "docs/thesis.md", "the team's vocabulary matters.\n")
@@ -221,7 +221,7 @@ func TestRunDrift_Idempotent(t *testing.T) {
 func TestRunDrift_NumberingPicksUpFromExisting(t *testing.T) {
 	root := t.TempDir()
 	ctx := context.Background()
-	if err := runScan(ctx, &bytes.Buffer{}, root); err != nil {
+	if err := runScan(ctx, &bytes.Buffer{}, root, fixedNow); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 	// Pre-stage an existing observation at number 0042 with a different slug.
@@ -264,7 +264,7 @@ func TestRunDrift_NumberingPicksUpFromExisting(t *testing.T) {
 func TestRunDrift_DedupesPerLine(t *testing.T) {
 	root := t.TempDir()
 	ctx := context.Background()
-	if err := runScan(ctx, &bytes.Buffer{}, root); err != nil {
+	if err := runScan(ctx, &bytes.Buffer{}, root, fixedNow); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 	// Two occurrences of "vocabulary" on line 1: should dedupe to one citation.
@@ -294,6 +294,110 @@ func TestRunDrift_DedupesPerLine(t *testing.T) {
 	}
 	if !strings.Contains(s, "- doc.md: 1\n") {
 		t.Errorf("expected '- doc.md: 1' citation line, got:\n%s", s)
+	}
+}
+
+func TestRunScan_FirstRunWritesLog(t *testing.T) {
+	root := t.TempDir()
+	if err := runScan(context.Background(), &bytes.Buffer{}, root, fixedNow); err != nil {
+		t.Fatalf("runScan: %v", err)
+	}
+	logBytes, err := os.ReadFile(filepath.Join(root, ".ocp", "log.md"))
+	if err != nil {
+		t.Fatalf("expected log.md to exist: %v", err)
+	}
+	if !strings.Contains(string(logBytes), "scan seeded glossary") {
+		t.Errorf("missing seed entry in log.md:\n%s", logBytes)
+	}
+}
+
+func TestRunScan_SecondRunDoesNotLog(t *testing.T) {
+	root := t.TempDir()
+	ctx := context.Background()
+	if err := runScan(ctx, &bytes.Buffer{}, root, fixedNow); err != nil {
+		t.Fatalf("first runScan: %v", err)
+	}
+	beforeLog, err := os.ReadFile(filepath.Join(root, ".ocp", "log.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	later := fixedNow.Add(1 * time.Hour)
+	if err := runScan(ctx, &bytes.Buffer{}, root, later); err != nil {
+		t.Fatalf("second runScan: %v", err)
+	}
+	afterLog, err := os.ReadFile(filepath.Join(root, ".ocp", "log.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(beforeLog) != string(afterLog) {
+		t.Errorf("second scan should not change log.md\nbefore:\n%s\nafter:\n%s", beforeLog, afterLog)
+	}
+}
+
+func TestRunDrift_FilingWritesLog(t *testing.T) {
+	root := t.TempDir()
+	ctx := context.Background()
+	if err := runScan(ctx, &bytes.Buffer{}, root, fixedNow); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	writeTestFile(t, root, "doc.md", "the team's vocabulary matters.\n")
+	if err := runDrift(ctx, &bytes.Buffer{}, root, fixedNow); err != nil {
+		t.Fatalf("runDrift: %v", err)
+	}
+	logBytes, err := os.ReadFile(filepath.Join(root, ".ocp", "log.md"))
+	if err != nil {
+		t.Fatalf("expected log.md to exist: %v", err)
+	}
+	s := string(logBytes)
+	if !strings.Contains(s, "drift filed 1 observation") {
+		t.Errorf("missing drift entry in log.md:\n%s", s)
+	}
+	if !strings.Contains(s, "vocabulary-glossary.md") {
+		t.Errorf("missing observation filename in log.md:\n%s", s)
+	}
+}
+
+func TestRunDrift_NoOpDoesNotLog(t *testing.T) {
+	root := t.TempDir()
+	ctx := context.Background()
+	if err := runScan(ctx, &bytes.Buffer{}, root, fixedNow); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	writeTestFile(t, root, "doc.md", "the team's vocabulary matters.\n")
+	if err := runDrift(ctx, &bytes.Buffer{}, root, fixedNow); err != nil {
+		t.Fatalf("first drift: %v", err)
+	}
+	beforeLog, err := os.ReadFile(filepath.Join(root, ".ocp", "log.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	later := fixedNow.Add(1 * time.Hour)
+	if err := runDrift(ctx, &bytes.Buffer{}, root, later); err != nil {
+		t.Fatalf("second drift: %v", err)
+	}
+	afterLog, err := os.ReadFile(filepath.Join(root, ".ocp", "log.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(beforeLog) != string(afterLog) {
+		t.Errorf("idempotent drift should not change log.md\nbefore:\n%s\nafter:\n%s", beforeLog, afterLog)
+	}
+}
+
+func TestRunDrift_ZeroHitsDoesNotLog(t *testing.T) {
+	root := t.TempDir()
+	ctx := context.Background()
+	if err := runScan(ctx, &bytes.Buffer{}, root, fixedNow); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	// No code files; scan logged its seed entry but drift has nothing to find.
+	beforeLog, _ := os.ReadFile(filepath.Join(root, ".ocp", "log.md"))
+	if err := runDrift(ctx, &bytes.Buffer{}, root, fixedNow); err != nil {
+		t.Fatalf("runDrift: %v", err)
+	}
+	afterLog, _ := os.ReadFile(filepath.Join(root, ".ocp", "log.md"))
+	if string(beforeLog) != string(afterLog) {
+		t.Errorf("zero-hit drift should not change log.md\nbefore:\n%s\nafter:\n%s", beforeLog, afterLog)
 	}
 }
 

@@ -47,9 +47,11 @@ var scanCmd = &cobra.Command{
 
 Behavior:
   - If .ocp/glossary.md does not exist, write the seed glossary
-    (the project's own canonical vocabulary) and report
+    (the project's own canonical vocabulary), append a one-line
+    self-observation to .ocp/log.md, and report
     "wrote new glossary at <path>".
   - If .ocp/glossary.md exists, read it and report the term count.
+    No log entry is written for a no-op load.
   - In both cases, print the full glossary markdown to stdout.
 
 Exit codes:
@@ -60,14 +62,14 @@ Exit codes:
 		if err != nil {
 			return fmt.Errorf("cwd: %w", err)
 		}
-		return runScan(cmd.Context(), cmd.OutOrStdout(), cwd)
+		return runScan(cmd.Context(), cmd.OutOrStdout(), cwd, time.Now().UTC())
 	},
 }
 
 // runScan is the testable core of the scan subcommand. Decoupled from
-// cobra so tests pass a temp dir and a buffer instead of relying on
-// process state.
-func runScan(ctx context.Context, out io.Writer, root string) error {
+// cobra so tests pass a temp dir, a buffer, and a fixed time instead of
+// relying on process state.
+func runScan(ctx context.Context, out io.Writer, root string, now time.Time) error {
 	fs := storage.New(root)
 	g, err := fs.LoadGlossary(ctx, storage.RepoID(""))
 	seeded := false
@@ -86,6 +88,12 @@ func runScan(ctx context.Context, out io.Writer, root string) error {
 
 	if seeded {
 		fmt.Fprintf(out, "wrote new glossary at %s (%d terms)\n\n", filepath.Join(root, ".ocp", "glossary.md"), len(g.Terms))
+		if err := fs.AppendLog(ctx, storage.RepoID(""), storage.LogEntry{
+			At:   now,
+			Body: fmt.Sprintf("scan seeded glossary (%d terms)", len(g.Terms)),
+		}); err != nil {
+			return fmt.Errorf("append log: %w", err)
+		}
 	} else {
 		fmt.Fprintf(out, "loaded glossary: %d terms\n\n", len(g.Terms))
 	}
@@ -203,6 +211,7 @@ func runDrift(ctx context.Context, out io.Writer, root string, now time.Time) er
 	newCount := 0
 	skipCount := 0
 	nextNumber := maxNumber + 1
+	var filed []string
 	for _, c := range candidates {
 		slug := slugify(c.Synonym) + "-" + slugify(c.Canonical)
 		if existingSlugs[slug] {
@@ -223,10 +232,25 @@ func runDrift(ctx context.Context, out io.Writer, root string, now time.Time) er
 		}
 		newCount++
 		nextNumber++
+		filed = append(filed, state.Ref.Path)
 	}
 
 	fmt.Fprintf(out, "%d %s: %d new (filed), %d existing\n",
 		len(candidates), pluralize("candidate", len(candidates)), newCount, skipCount)
+
+	if newCount > 0 {
+		var body strings.Builder
+		fmt.Fprintf(&body, "drift filed %d %s:", newCount, pluralize("observation", newCount))
+		for _, p := range filed {
+			fmt.Fprintf(&body, "\n- %s", p)
+		}
+		if err := fs.AppendLog(ctx, storage.RepoID(""), storage.LogEntry{
+			At:   now,
+			Body: body.String(),
+		}); err != nil {
+			return fmt.Errorf("append log: %w", err)
+		}
+	}
 	return nil
 }
 
