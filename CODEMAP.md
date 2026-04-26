@@ -36,8 +36,9 @@ Present:
   - `filesystem_test.go` — round-trip tests, edge cases, the issue-lifecycle test, the file-mode pin (0o644), and `AllIssueRefs` coverage (open + closed enumeration).
 
 - `internal/scout/` — cheap-stage drift detector. Pure Go, zero LLM calls. Walks the working tree for textual occurrences of glossary synonyms; returns `Hit` values for the next stage to judge.
-  - `scout.go` — `Detect(ctx, root, glossary) []Hit`. Word-boundary regex per synonym, file-extension allowlist (`.go`/`.md`/`.toml`), excludes hidden dirs and common build/vendor paths.
-  - `scout_test.go` — detection tests covering matching, multi-word synonyms, word-boundary correctness, dir/extension exclusions, and context cancellation.
+  - `scout.go` — `Detect(ctx, root, glossary) []Hit`. Dispatches between the git-aware path (when root is a git repo) and a plain filesystem walk fallback. Word-boundary regex per synonym, file-extension allowlist (`.go`/`.md`/`.toml`), excludes `.ocp/` always, hidden dirs only in the fallback.
+  - `git.go` — `gitTrackedFiles(ctx, root)`. Two short subprocess calls (`git rev-parse`, `git ls-files --cached --others --exclude-standard`) to get the set of paths git considers in-repo. Returns `errNotGitRepo` outside a working tree; caller falls back to walking.
+  - `scout_test.go` — detection tests covering matching, multi-word synonyms, word-boundary correctness, dir/extension exclusions, context cancellation, gitignore respect, and the `.ocp/` always-exclude rule.
 
 Planned, not yet present (see `docs/PLAN.md` for the build order):
 
@@ -59,7 +60,8 @@ Planned, not yet present (see `docs/PLAN.md` for the build order):
 | Add a new Storage method | edit the interface in `internal/storage/storage.go`, then update each impl |
 | Change the on-disk glossary or observation format | `internal/storage/filesystem.go` (`parseGlossary`, `Glossary.Markdown`, `serializeObservation`) |
 | Find synonym occurrences in a tree | `internal/scout/scout.go` (`Detect`) |
-| Tune what scout scans (extensions, excluded dirs) | `internal/scout/scout.go` (`isScannable`, `isExcludedDir`) |
+| Tune what scout scans (extensions, excluded dirs) | `internal/scout/scout.go` (`isScannable`, `isExcludedDir`, `isAlwaysExcluded`) |
+| Change how scout discovers files in a git repo | `internal/scout/git.go` (`gitTrackedFiles`) |
 | Tune the seed glossary OCP writes on first run | `cmd/ocp/main.go` (`seedGlossary`) |
 | Add a new ocp subcommand | `cmd/ocp/main.go` (declare `*cobra.Command`, register in `init`) |
 | Change how drift candidates become observations | `cmd/ocp/main.go` (`groupHits`, `candidateBody`) |

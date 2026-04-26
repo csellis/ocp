@@ -30,14 +30,48 @@ type Hit struct {
 	Snippet   string // the trimmed line containing the match
 }
 
-// Detect walks root for glossary synonyms in scannable files. Returns
-// hits in walk order (deterministic for a given filesystem). Returns
-// no hits and no error if the glossary declares no synonyms.
+// Detect returns hits for every glossary synonym occurrence in root.
+//
+// When root is a git working tree, the file set is `git ls-files
+// --cached --others --exclude-standard` (tracked files plus untracked
+// files not matched by .gitignore). Outside a git repo, falls back to
+// a plain filesystem walk that hardcodes the common excluded
+// directories (hidden, node_modules, vendor, bin, dist).
+//
+// Returns no hits and no error if the glossary declares no synonyms.
 func Detect(ctx context.Context, root string, g storage.Glossary) ([]Hit, error) {
 	entries := buildEntries(g)
 	if len(entries) == 0 {
 		return nil, nil
 	}
+	if files, err := gitTrackedFiles(ctx, root); err == nil {
+		return scanList(ctx, root, files, entries)
+	}
+	return scanWalk(ctx, root, entries)
+}
+
+// scanList scans an explicit set of paths (the git-aware path).
+func scanList(ctx context.Context, root string, files []string, entries []synEntry) ([]Hit, error) {
+	var hits []Hit
+	for _, rel := range files {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		if isAlwaysExcluded(rel) || !isScannable(filepath.Base(rel)) {
+			continue
+		}
+		fileHits, err := scanFile(filepath.Join(root, rel), rel, entries)
+		if err != nil {
+			return nil, err
+		}
+		hits = append(hits, fileHits...)
+	}
+	return hits, nil
+}
+
+// scanWalk is the no-git fallback. Walks the tree, applies extension
+// and exclude-dir filters, scans each candidate file.
+func scanWalk(ctx context.Context, root string, entries []synEntry) ([]Hit, error) {
 	var hits []Hit
 	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -56,6 +90,9 @@ func Detect(ctx context.Context, root string, g storage.Glossary) ([]Hit, error)
 			return nil
 		}
 		rel, _ := filepath.Rel(root, path)
+		if isAlwaysExcluded(rel) {
+			return nil
+		}
 		fileHits, err := scanFile(path, rel, entries)
 		if err != nil {
 			return err
@@ -84,6 +121,7 @@ func buildEntries(g storage.Glossary) []synEntry {
 
 // isExcludedDir filters directory walk. The walk root itself is always
 // scanned; everything else hidden, build-output, or vendored is skipped.
+// Used only by the no-git fallback path; in git mode, .gitignore decides.
 func isExcludedDir(path, root, name string) bool {
 	if path == root {
 		return false
@@ -96,6 +134,14 @@ func isExcludedDir(path, root, name string) bool {
 		return true
 	}
 	return false
+}
+
+// isAlwaysExcluded returns true for paths OCP must never scan, even
+// when git tracks them. .ocp/ holds OCP's own state and would produce
+// self-referential observations (the glossary literally contains every
+// declared synonym).
+func isAlwaysExcluded(rel string) bool {
+	return rel == ".ocp" || strings.HasPrefix(rel, ".ocp/")
 }
 
 func isScannable(name string) bool {

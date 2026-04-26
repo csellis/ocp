@@ -3,6 +3,7 @@ package scout
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"testing"
@@ -136,6 +137,87 @@ func TestDetect_ContextCancellation(t *testing.T) {
 	_, err := Detect(ctx, root, g)
 	if err == nil {
 		t.Fatal("want error from cancelled context, got nil")
+	}
+}
+
+func TestDetect_GitignoreRespected(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+	root := t.TempDir()
+	runGit(t, root, "init", "-q")
+
+	writeFile(t, root, ".gitignore", "ignored.md\n")
+	writeFile(t, root, "tracked.md", "the team's vocabulary matters.\n")
+	writeFile(t, root, "ignored.md", "more vocabulary here.\n")
+	writeFile(t, root, "untracked.md", "vocabulary in an untracked but not ignored file.\n")
+	runGit(t, root, "add", ".gitignore", "tracked.md")
+	runGit(t, root, "commit", "-q", "-m", "init")
+
+	g := storage.Glossary{Terms: []storage.Term{
+		{Canonical: "glossary", Synonyms: []string{"vocabulary"}},
+	}}
+	hits, err := Detect(context.Background(), root, g)
+	if err != nil {
+		t.Fatalf("Detect: %v", err)
+	}
+
+	gotFiles := map[string]bool{}
+	for _, h := range hits {
+		gotFiles[h.File] = true
+	}
+	if !gotFiles["tracked.md"] {
+		t.Errorf("expected tracked.md in hits, got %v", gotFiles)
+	}
+	if !gotFiles["untracked.md"] {
+		t.Errorf("expected untracked.md in hits (not gitignored), got %v", gotFiles)
+	}
+	if gotFiles["ignored.md"] {
+		t.Errorf("ignored.md should be skipped via .gitignore, got %v", gotFiles)
+	}
+}
+
+func TestDetect_DotOcpAlwaysExcluded(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+	root := t.TempDir()
+	runGit(t, root, "init", "-q")
+	// Track .ocp/glossary.md explicitly (no .gitignore on it). Scout must
+	// still skip it: .ocp is OCP's own state.
+	writeFile(t, root, ".ocp/glossary.md", "## glossary\n\nSynonyms: vocabulary\n")
+	writeFile(t, root, "tracked.md", "vocabulary here.\n")
+	runGit(t, root, "add", ".")
+	runGit(t, root, "commit", "-q", "-m", "init")
+
+	g := storage.Glossary{Terms: []storage.Term{
+		{Canonical: "glossary", Synonyms: []string{"vocabulary"}},
+	}}
+	hits, err := Detect(context.Background(), root, g)
+	if err != nil {
+		t.Fatalf("Detect: %v", err)
+	}
+	for _, h := range hits {
+		if h.File == ".ocp/glossary.md" {
+			t.Errorf(".ocp/glossary.md must always be excluded, got hit %#v", h)
+		}
+	}
+}
+
+// runGit runs a git command in dir with deterministic author/committer
+// env so tests do not depend on the user's git config.
+func runGit(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(),
+		"GIT_AUTHOR_NAME=ocp-test",
+		"GIT_AUTHOR_EMAIL=ocp-test@example.com",
+		"GIT_COMMITTER_NAME=ocp-test",
+		"GIT_COMMITTER_EMAIL=ocp-test@example.com",
+	)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git %v: %v\n%s", args, err, out)
 	}
 }
 
