@@ -1,0 +1,37 @@
+# Local Claude instructions
+CLAUDE.local.md
+
+# Go build artifacts
+/bin/
+/dist/
+*.test
+*.out
+*.exe
+*.prof
+coverage.txt
+
+# Go workspace
+go.work
+go.work.sum
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/*
+!.vscode/settings.json.example
+*.swp
+*~
+
+# Secrets / config
+.env
+.env.local
+*.local.toml
+service-account*.json
+
+# OCP local dev state (per-repo state lives in .ocp/, but the dogfood
+# instance's working caches do not need to be tracked)
+.ocp/cache/
+.ocp/sessions/
+
+# Eval scratch
+/eval/scratch/

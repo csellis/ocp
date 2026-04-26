@@ -1,0 +1,18 @@
+OCP
+Copyright 2026 Chris Ellis
+
+Licensed under the Apache License, Version 2.0 (the "License").
+
+This product builds on ideas from:
+  - Matt Pocock's skills (https://github.com/mattpocock/skills),
+    in particular `ubiquitous-language` and `improve-codebase-architecture`.
+    Reference talk: "Software Fundamentals Matter More Than Ever".
+  - Mario Zechner's pi-mono (https://github.com/badlogic/pi-mono).
+    Pi-mono is the harness pattern this Go port is built against.
+  - John Ousterhout, "A Philosophy of Software Design".
+  - Eric Evans, "Domain-Driven Design".
+
+The Banks-style ship-name pack draws aesthetic inspiration from
+the Culture novels of Iain M. Banks. The Oblique Strategy card pack
+draws inspiration from Brian Eno and Peter Schmidt's Oblique
+Strategies. Neither is endorsed by the respective rights holders.
