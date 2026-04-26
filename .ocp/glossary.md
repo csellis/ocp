@@ -12,6 +12,8 @@ Movement of a canonical term toward synonymy, ambiguity, or vagueness. The thing
 
 The team's ubiquitous language, held as .ocp/glossary.md. OCP reads it on every run; humans edit it; OCP files observations when usage drifts from canonical.
 
+Synonyms: ubiquitous language, vocabulary
+
 ## scout
 
 The cheap-stage detector. Pure Go, zero LLM calls. Stage one of the two-stage cascade.

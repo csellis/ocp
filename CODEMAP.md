@@ -24,7 +24,7 @@ This file exists to answer "where is X?" in one read. Keep it accurate. When a n
 
 ## Binaries
 
-- `cmd/ocp/main.go` — the only binary. Subcommands `scan`, `drift`, `respond`, `serve` land in plan steps 11 to 13. Today only `ocp version` works.
+- `cmd/ocp/main.go` — the only binary. Subcommands present today: `scan`, `drift`. The `respond` and `serve` subcommands land in later slices (see `docs/PLAN.md`).
 
 ## Packages
 
@@ -32,14 +32,17 @@ Present:
 
 - `internal/storage/` — persistent state for one repo.
   - `storage.go` — the `Storage` interface plus the data types it traffics in (`Glossary`, `Term`, `LogEntry`, `IssueRef`, `IssueState`, `IssueStatus`, `RepoID`) and the `ErrNotFound` sentinel.
-  - `filesystem.go` — the v0.1 implementation. Reads and writes files under `.ocp/` inside the watched repo. Atomic writes via temp-file plus rename. Glossary parser and observation serializer live here too.
-  - `filesystem_test.go` — table-driven round-trip tests, edge cases, and the issue-lifecycle test.
+  - `filesystem.go` — the v0.1 implementation. Reads and writes files under `.ocp/` inside the watched repo. Atomic writes via temp-file plus rename. Glossary parser and `Glossary.Markdown()` serializer live here too.
+  - `filesystem_test.go` — table-driven round-trip tests, edge cases, the issue-lifecycle test, and the file-mode pin (0o644).
+
+- `internal/scout/` — cheap-stage drift detector. Pure Go, zero LLM calls. Walks the working tree for textual occurrences of glossary synonyms; returns `Hit` values for the next stage to judge.
+  - `scout.go` — `Detect(ctx, root, glossary) []Hit`. Word-boundary regex per synonym, file-extension allowlist (`.go`/`.md`/`.toml`), excludes hidden dirs and common build/vendor paths.
+  - `scout_test.go` — detection tests covering matching, multi-word synonyms, word-boundary correctness, dir/extension exclusions, and context cancellation.
 
 Planned, not yet present (see `docs/PLAN.md` for the build order):
 
 - `internal/agent/` — pi-style stateful agent primitives.
-- `internal/cognition/` — LLM seam; `vertex/` subpackage wraps Gemini.
-- `internal/scout/` — cheap-stage drift detector. Pure Go, zero LLM calls.
+- `internal/cognition/` — LLM seam; `vertex/` subpackage wraps Gemini (default model: 2.5 Flash).
 - `internal/tools/` — agent tools: `parse_diff`, `read_glossary`, `find_term_uses`, `github_issues`, etc.
 - `internal/triggers/` — invocation surfaces: `cli`, `webhook` (v0.2), `scheduler` (v0.2).
 - `internal/voice/` — observation formatting plus the Oblique Strategies card pack.
@@ -54,7 +57,11 @@ Planned, not yet present (see `docs/PLAN.md` for the build order):
 | Append to `.ocp/log.md` | `internal/storage/filesystem.go` (`AppendLog`) |
 | List or update open observations | `internal/storage/filesystem.go` (`LoadOpenIssues`, `RecordIssueState`) |
 | Add a new Storage method | edit the interface in `internal/storage/storage.go`, then update each impl |
-| Change the on-disk glossary or observation format | `internal/storage/filesystem.go` (`parseGlossary`, `serializeGlossary`, `serializeObservation`) |
+| Change the on-disk glossary or observation format | `internal/storage/filesystem.go` (`parseGlossary`, `Glossary.Markdown`, `serializeObservation`) |
+| Find synonym occurrences in a tree | `internal/scout/scout.go` (`Detect`) |
+| Tune what scout scans (extensions, excluded dirs) | `internal/scout/scout.go` (`isScannable`, `isExcludedDir`) |
+| Tune the seed glossary OCP writes on first run | `cmd/ocp/main.go` (`seedGlossary`) |
+| Add a new ocp subcommand | `cmd/ocp/main.go` (declare `*cobra.Command`, register in `init`) |
 | Change build, test, or lint behavior | `Makefile`, `.golangci.yml` |
 | Change agent rules or voice for everyone | `AGENTS.md` |
 | Change Claude's per-maintainer behavior | `CLAUDE.local.md` |

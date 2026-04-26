@@ -94,3 +94,56 @@ func TestRunScan_SecondRunLoads(t *testing.T) {
 		t.Errorf("did not expect 'wrote new glossary' on second run, got:\n%s", out)
 	}
 }
+
+func TestRunDrift_NoGlossary(t *testing.T) {
+	root := t.TempDir()
+	var buf bytes.Buffer
+	if err := runDrift(context.Background(), &buf, root); err != nil {
+		t.Fatalf("runDrift: %v", err)
+	}
+	if !strings.Contains(buf.String(), "no glossary") {
+		t.Errorf("expected hint about missing glossary, got:\n%s", buf.String())
+	}
+}
+
+func TestRunDrift_NoHits(t *testing.T) {
+	root := t.TempDir()
+	if err := runScan(context.Background(), &bytes.Buffer{}, root); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	// Working tree has no .md/.go/.toml files, so even with synonyms in the seed
+	// glossary there is nothing to scan.
+	var buf bytes.Buffer
+	if err := runDrift(context.Background(), &buf, root); err != nil {
+		t.Fatalf("runDrift: %v", err)
+	}
+	if !strings.Contains(buf.String(), "no drift detected") {
+		t.Errorf("expected 'no drift detected', got:\n%s", buf.String())
+	}
+}
+
+func TestRunDrift_FindsSynonyms(t *testing.T) {
+	root := t.TempDir()
+	ctx := context.Background()
+	if err := runScan(ctx, &bytes.Buffer{}, root); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	doc := filepath.Join(root, "docs", "thesis.md")
+	if err := os.MkdirAll(filepath.Dir(doc), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(doc, []byte("the team's vocabulary matters.\nthe ubiquitous language too.\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var buf bytes.Buffer
+	if err := runDrift(ctx, &buf, root); err != nil {
+		t.Fatalf("runDrift: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{"vocabulary", "ubiquitous language", "canonical: glossary", "2 hits"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("expected %q in output, got:\n%s", want, out)
+		}
+	}
+}

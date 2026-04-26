@@ -15,6 +15,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/csellis/ocp/internal/scout"
 	"github.com/csellis/ocp/internal/storage"
 )
 
@@ -104,6 +105,7 @@ func seedGlossary() storage.Glossary {
 		{
 			Canonical:  "glossary",
 			Definition: "The team's ubiquitous language, held as .ocp/glossary.md. OCP reads it on every run; humans edit it; OCP files observations when usage drifts from canonical.",
+			Synonyms:   []string{"ubiquitous language", "vocabulary"},
 		},
 		{
 			Canonical:  "scout",
@@ -124,8 +126,76 @@ func seedGlossary() storage.Glossary {
 	}}
 }
 
+var driftCmd = &cobra.Command{
+	Use:   "drift",
+	Short: "Scan the working tree for glossary synonyms and report each occurrence.",
+	Long: `Drift walks the current working directory looking for words your
+glossary lists as synonyms of canonical terms. Each occurrence is
+reported as a candidate drift event.
+
+Behavior:
+  - Loads .ocp/glossary.md from the current directory. If missing,
+    prints a hint to run 'ocp scan' first and exits 0.
+  - Walks .go, .md, and .toml files. Skips .git/, .ocp/, hidden
+    directories, node_modules, vendor, bin, dist.
+  - Prints one line per hit:
+        <file>:<line>: "<synonym>" -> canonical: <canonical>
+    followed by a summary line.
+
+This slice does not write observation files. That ships in slice 3.
+
+Exit codes:
+  0  success (with or without hits, with or without glossary)
+  1  unrecoverable error (unreadable file, malformed glossary)`,
+	RunE: func(cmd *cobra.Command, _ []string) error {
+		cwd, err := os.Getwd()
+		if err != nil {
+			return fmt.Errorf("cwd: %w", err)
+		}
+		return runDrift(cmd.Context(), cmd.OutOrStdout(), cwd)
+	},
+}
+
+func runDrift(ctx context.Context, out io.Writer, root string) error {
+	fs := storage.New(root)
+	g, err := fs.LoadGlossary(ctx, storage.RepoID(""))
+	if err != nil {
+		if errors.Is(err, storage.ErrNotFound) {
+			fmt.Fprintln(out, "no glossary at .ocp/glossary.md; run `ocp scan` to seed one")
+			return nil
+		}
+		return fmt.Errorf("load glossary: %w", err)
+	}
+
+	hits, err := scout.Detect(ctx, root, g)
+	if err != nil {
+		return fmt.Errorf("scout: %w", err)
+	}
+
+	if len(hits) == 0 {
+		fmt.Fprintln(out, "no drift detected")
+		return nil
+	}
+
+	files := map[string]struct{}{}
+	for _, h := range hits {
+		files[h.File] = struct{}{}
+		fmt.Fprintf(out, "%s:%d: %q -> canonical: %s\n", h.File, h.Line, h.Synonym, h.Canonical)
+	}
+	fmt.Fprintf(out, "\n%d %s across %d %s\n", len(hits), pluralize("hit", len(hits)), len(files), pluralize("file", len(files)))
+	return nil
+}
+
+func pluralize(s string, n int) string {
+	if n == 1 {
+		return s
+	}
+	return s + "s"
+}
+
 func init() {
 	rootCmd.AddCommand(scanCmd)
+	rootCmd.AddCommand(driftCmd)
 }
 
 func main() {
