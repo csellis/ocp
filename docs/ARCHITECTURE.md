@@ -93,6 +93,8 @@ type Cognition interface {
 
 For v0.1 we have one implementation: `internal/cognition/vertex`. It uses the Vertex AI Go SDK to stream against Gemini. The model identifier is configurable per agent run.
 
+The default model for v0.1 is **Gemini 2.5 Flash**. Justification: the cheap-stage cascade exists precisely so the LLM call is rare; when it does fire, the work is judging a single drift candidate against a small glossary, not multi-step reasoning. Flash is the right capability/price point for that shape of work. Pro is reserved for tasks the eval harness shows Flash cannot handle, which we expect to be none for synonymy detection. The model identifier is configurable so a future operator can override.
+
 Provider abstraction exists from day one even though we ship one provider. This is not premature abstraction. It is a seam that keeps cognition swappable, lets the eval harness mock cognition with deterministic fixtures, and protects us if Vertex pricing or availability changes.
 
 ## Tools
