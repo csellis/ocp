@@ -96,6 +96,38 @@ func (fs *Filesystem) LoadOpenIssues(_ context.Context, _ RepoID) ([]IssueRef, e
 	return refs, nil
 }
 
+// AllIssueRefs returns refs for every observation, open or closed. The
+// returned IssueRefs carry the file basename in Path; callers cannot
+// distinguish open from closed from the ref alone (both directories
+// share a single basename namespace by design).
+func (fs *Filesystem) AllIssueRefs(_ context.Context, _ RepoID) ([]IssueRef, error) {
+	seen := map[string]bool{}
+	var refs []IssueRef
+	for _, dir := range []string{fs.conversationDir(), fs.closedDir()} {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			return nil, fmt.Errorf("read %s: %w", dir, err)
+		}
+		for _, e := range entries {
+			if e.IsDir() || !strings.HasSuffix(e.Name(), ".md") {
+				continue
+			}
+			if seen[e.Name()] {
+				continue
+			}
+			seen[e.Name()] = true
+			refs = append(refs, IssueRef{
+				Number: numberFromName(e.Name()),
+				Path:   e.Name(),
+			})
+		}
+	}
+	return refs, nil
+}
+
 func (fs *Filesystem) RecordIssueState(_ context.Context, _ RepoID, state IssueState) error {
 	if state.Ref.Path == "" {
 		return errors.New("RecordIssueState: empty Ref.Path")

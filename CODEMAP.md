@@ -33,7 +33,7 @@ Present:
 - `internal/storage/` — persistent state for one repo.
   - `storage.go` — the `Storage` interface plus the data types it traffics in (`Glossary`, `Term`, `LogEntry`, `IssueRef`, `IssueState`, `IssueStatus`, `RepoID`) and the `ErrNotFound` sentinel.
   - `filesystem.go` — the v0.1 implementation. Reads and writes files under `.ocp/` inside the watched repo. Atomic writes via temp-file plus rename. Glossary parser and `Glossary.Markdown()` serializer live here too.
-  - `filesystem_test.go` — table-driven round-trip tests, edge cases, the issue-lifecycle test, and the file-mode pin (0o644).
+  - `filesystem_test.go` — round-trip tests, edge cases, the issue-lifecycle test, the file-mode pin (0o644), and `AllIssueRefs` coverage (open + closed enumeration).
 
 - `internal/scout/` — cheap-stage drift detector. Pure Go, zero LLM calls. Walks the working tree for textual occurrences of glossary synonyms; returns `Hit` values for the next stage to judge.
   - `scout.go` — `Detect(ctx, root, glossary) []Hit`. Word-boundary regex per synonym, file-extension allowlist (`.go`/`.md`/`.toml`), excludes hidden dirs and common build/vendor paths.
@@ -62,6 +62,9 @@ Planned, not yet present (see `docs/PLAN.md` for the build order):
 | Tune what scout scans (extensions, excluded dirs) | `internal/scout/scout.go` (`isScannable`, `isExcludedDir`) |
 | Tune the seed glossary OCP writes on first run | `cmd/ocp/main.go` (`seedGlossary`) |
 | Add a new ocp subcommand | `cmd/ocp/main.go` (declare `*cobra.Command`, register in `init`) |
+| Change how drift candidates become observations | `cmd/ocp/main.go` (`groupHits`, `candidateBody`) |
+| Change observation filename slug rules | `cmd/ocp/main.go` (`slugify`, `slugFromPath`) |
+| Enumerate every observation (open + closed) | `internal/storage/filesystem.go` (`AllIssueRefs`) |
 | Change build, test, or lint behavior | `Makefile`, `.golangci.yml` |
 | Change agent rules or voice for everyone | `AGENTS.md` |
 | Change Claude's per-maintainer behavior | `CLAUDE.local.md` |

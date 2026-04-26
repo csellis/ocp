@@ -7,9 +7,12 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/csellis/ocp/internal/storage"
 )
+
+var fixedNow = time.Date(2026, 4, 26, 12, 0, 0, 0, time.UTC)
 
 func TestSeedGlossary(t *testing.T) {
 	g := seedGlossary()
@@ -98,7 +101,7 @@ func TestRunScan_SecondRunLoads(t *testing.T) {
 func TestRunDrift_NoGlossary(t *testing.T) {
 	root := t.TempDir()
 	var buf bytes.Buffer
-	if err := runDrift(context.Background(), &buf, root); err != nil {
+	if err := runDrift(context.Background(), &buf, root, fixedNow); err != nil {
 		t.Fatalf("runDrift: %v", err)
 	}
 	if !strings.Contains(buf.String(), "no glossary") {
@@ -111,10 +114,8 @@ func TestRunDrift_NoHits(t *testing.T) {
 	if err := runScan(context.Background(), &bytes.Buffer{}, root); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
-	// Working tree has no .md/.go/.toml files, so even with synonyms in the seed
-	// glossary there is nothing to scan.
 	var buf bytes.Buffer
-	if err := runDrift(context.Background(), &buf, root); err != nil {
+	if err := runDrift(context.Background(), &buf, root, fixedNow); err != nil {
 		t.Fatalf("runDrift: %v", err)
 	}
 	if !strings.Contains(buf.String(), "no drift detected") {
@@ -122,28 +123,217 @@ func TestRunDrift_NoHits(t *testing.T) {
 	}
 }
 
-func TestRunDrift_FindsSynonyms(t *testing.T) {
+func TestRunDrift_FilesObservations(t *testing.T) {
 	root := t.TempDir()
 	ctx := context.Background()
 	if err := runScan(ctx, &bytes.Buffer{}, root); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
-	doc := filepath.Join(root, "docs", "thesis.md")
-	if err := os.MkdirAll(filepath.Dir(doc), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(doc, []byte("the team's vocabulary matters.\nthe ubiquitous language too.\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	// Two synonyms, both of canonical "glossary": one observation each,
+	// even though the synonym appears in multiple files.
+	writeTestFile(t, root, "docs/a.md", "the team's vocabulary matters.\n")
+	writeTestFile(t, root, "docs/b.md", "more vocabulary here.\nplus ubiquitous language.\n")
 
 	var buf bytes.Buffer
-	if err := runDrift(ctx, &buf, root); err != nil {
+	if err := runDrift(ctx, &buf, root, fixedNow); err != nil {
 		t.Fatalf("runDrift: %v", err)
 	}
 	out := buf.String()
-	for _, want := range []string{"vocabulary", "ubiquitous language", "canonical: glossary", "2 hits"} {
-		if !strings.Contains(out, want) {
-			t.Errorf("expected %q in output, got:\n%s", want, out)
+	if !strings.Contains(out, "2 candidates: 2 new (filed), 0 existing") {
+		t.Errorf("expected summary line, got:\n%s", out)
+	}
+
+	convDir := filepath.Join(root, ".ocp", "conversation")
+	entries, err := os.ReadDir(convDir)
+	if err != nil {
+		t.Fatalf("read conversation dir: %v", err)
+	}
+	files := make([]string, 0, len(entries))
+	for _, e := range entries {
+		if !e.IsDir() {
+			files = append(files, e.Name())
 		}
+	}
+	if len(files) != 2 {
+		t.Fatalf("want 2 observation files (one per synonym, NOT per file), got %d: %v", len(files), files)
+	}
+
+	// The vocabulary candidate's body should cite both files.
+	var vocabFile string
+	for _, f := range files {
+		if strings.Contains(f, "vocabulary") {
+			vocabFile = f
+			break
+		}
+	}
+	if vocabFile == "" {
+		t.Fatalf("expected a vocabulary observation, got: %v", files)
+	}
+	content, err := os.ReadFile(filepath.Join(convDir, vocabFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(content)
+	for _, want := range []string{"Status: open", "canonicalizes this concept as `glossary`", "docs/a.md", "docs/b.md", "2 files (2 occurrences)"} {
+		if !strings.Contains(s, want) {
+			t.Errorf("missing %q in %s:\n%s", want, vocabFile, s)
+		}
+	}
+}
+
+func TestRunDrift_Idempotent(t *testing.T) {
+	root := t.TempDir()
+	ctx := context.Background()
+	if err := runScan(ctx, &bytes.Buffer{}, root); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	writeTestFile(t, root, "docs/thesis.md", "the team's vocabulary matters.\n")
+
+	if err := runDrift(ctx, &bytes.Buffer{}, root, fixedNow); err != nil {
+		t.Fatalf("first runDrift: %v", err)
+	}
+
+	var buf bytes.Buffer
+	if err := runDrift(ctx, &buf, root, fixedNow); err != nil {
+		t.Fatalf("second runDrift: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "1 candidate: 0 new (filed), 1 existing") {
+		t.Errorf("expected idempotent summary, got:\n%s", out)
+	}
+
+	convDir := filepath.Join(root, ".ocp", "conversation")
+	entries, err := os.ReadDir(convDir)
+	if err != nil {
+		t.Fatalf("read conversation dir: %v", err)
+	}
+	count := 0
+	for _, e := range entries {
+		if !e.IsDir() {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Errorf("expected 1 observation file after second run, got %d", count)
+	}
+}
+
+func TestRunDrift_NumberingPicksUpFromExisting(t *testing.T) {
+	root := t.TempDir()
+	ctx := context.Background()
+	if err := runScan(ctx, &bytes.Buffer{}, root); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	// Pre-stage an existing observation at number 0042 with a different slug.
+	convDir := filepath.Join(root, ".ocp", "conversation")
+	if err := os.MkdirAll(convDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	preExisting := filepath.Join(convDir, "0042-prior-existing.md")
+	if err := os.WriteFile(preExisting, []byte("---\nNumber: 42\nStatus: open\nUpdated: 2026-04-25T00:00:00Z\n---\n\nold\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, root, "docs/thesis.md", "the team's vocabulary matters.\n")
+
+	if err := runDrift(ctx, &bytes.Buffer{}, root, fixedNow); err != nil {
+		t.Fatalf("runDrift: %v", err)
+	}
+
+	entries, err := os.ReadDir(convDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gotNumbers := []string{}
+	for _, e := range entries {
+		if !e.IsDir() {
+			gotNumbers = append(gotNumbers, e.Name())
+		}
+	}
+	wantPrefix := "0043-"
+	found := false
+	for _, n := range gotNumbers {
+		if strings.HasPrefix(n, wantPrefix) {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected new file with prefix %s; got %v", wantPrefix, gotNumbers)
+	}
+}
+
+func TestRunDrift_DedupesPerLine(t *testing.T) {
+	root := t.TempDir()
+	ctx := context.Background()
+	if err := runScan(ctx, &bytes.Buffer{}, root); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	// Two occurrences of "vocabulary" on line 1: should dedupe to one citation.
+	writeTestFile(t, root, "doc.md", "vocabulary again vocabulary\n")
+
+	if err := runDrift(ctx, &bytes.Buffer{}, root, fixedNow); err != nil {
+		t.Fatalf("runDrift: %v", err)
+	}
+
+	convDir := filepath.Join(root, ".ocp", "conversation")
+	entries, err := os.ReadDir(convDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("want exactly 1 observation, got %d", len(entries))
+	}
+	raw, err := os.ReadFile(filepath.Join(convDir, entries[0].Name()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Body should report 1 occurrence (deduped from 2 matches), and citation
+	// line should be exactly "- doc.md: 1".
+	s := string(raw)
+	if !strings.Contains(s, "1 file (1 occurrence)") {
+		t.Errorf("expected '1 file (1 occurrence)' in body, got:\n%s", s)
+	}
+	if !strings.Contains(s, "- doc.md: 1\n") {
+		t.Errorf("expected '- doc.md: 1' citation line, got:\n%s", s)
+	}
+}
+
+func TestSlugify(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"vocabulary", "vocabulary"},
+		{"Vocabulary", "vocabulary"},
+		{"ubiquitous language", "ubiquitous-language"},
+		{"docs/THESIS.md", "docs-thesis-md"},
+		{"  multiple   spaces ", "multiple-spaces"},
+		{"already-slugged", "already-slugged"},
+		{"!!!leading-junk", "leading-junk"},
+	}
+	for _, tc := range cases {
+		if got := slugify(tc.in); got != tc.want {
+			t.Errorf("slugify(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+func TestSlugFromPath(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"0001-vocabulary-docs.md", "vocabulary-docs"},
+		{"0042-foo.md", "foo"},
+		{"no-prefix.md", "no-prefix"},
+	}
+	for _, tc := range cases {
+		if got := slugFromPath(tc.in); got != tc.want {
+			t.Errorf("slugFromPath(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+func writeTestFile(t *testing.T, root, rel, content string) {
+	t.Helper()
+	full := filepath.Join(root, rel)
+	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(full, []byte(content), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
 	}
 }

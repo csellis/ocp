@@ -25,6 +25,7 @@ type Storage interface {
 	SaveGlossary(ctx context.Context, repo RepoID, g Glossary) error
 	AppendLog(ctx context.Context, repo RepoID, entry LogEntry) error
 	LoadOpenIssues(ctx context.Context, repo RepoID) ([]IssueRef, error)
+	AllIssueRefs(ctx context.Context, repo RepoID) ([]IssueRef, error)
 	RecordIssueState(ctx context.Context, repo RepoID, state IssueState) error
 }
 

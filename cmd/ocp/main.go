@@ -12,6 +12,10 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
+	"sort"
+	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -128,35 +132,39 @@ func seedGlossary() storage.Glossary {
 
 var driftCmd = &cobra.Command{
 	Use:   "drift",
-	Short: "Scan the working tree for glossary synonyms and report each occurrence.",
+	Short: "Detect glossary drift in the working tree and persist candidates as observations.",
 	Long: `Drift walks the current working directory looking for words your
-glossary lists as synonyms of canonical terms. Each occurrence is
-reported as a candidate drift event.
+glossary lists as synonyms of canonical terms. Each unique
+(synonym, file) pair is filed as one observation under
+.ocp/conversation/.
 
 Behavior:
-  - Loads .ocp/glossary.md from the current directory. If missing,
-    prints a hint to run 'ocp scan' first and exits 0.
+  - Loads .ocp/glossary.md. If missing, prints a hint to run 'ocp
+    scan' first and exits 0.
   - Walks .go, .md, and .toml files. Skips .git/, .ocp/, hidden
     directories, node_modules, vendor, bin, dist.
-  - Prints one line per hit:
-        <file>:<line>: "<synonym>" -> canonical: <canonical>
-    followed by a summary line.
+  - Groups hits by (synonym, file) pair. For each pair NOT already
+    represented by an observation file (open or closed), writes a
+    new observation at:
+        .ocp/conversation/<NNNN>-<synonym>-<file>.md
+  - Prints a summary: how many candidates were found, how many were
+    new (filed), how many already had an observation.
 
-This slice does not write observation files. That ships in slice 3.
+Idempotent: re-running with no code changes files no new observations.
 
 Exit codes:
-  0  success (with or without hits, with or without glossary)
-  1  unrecoverable error (unreadable file, malformed glossary)`,
+  0  success
+  1  unrecoverable error (unreadable file, write failure, malformed glossary)`,
 	RunE: func(cmd *cobra.Command, _ []string) error {
 		cwd, err := os.Getwd()
 		if err != nil {
 			return fmt.Errorf("cwd: %w", err)
 		}
-		return runDrift(cmd.Context(), cmd.OutOrStdout(), cwd)
+		return runDrift(cmd.Context(), cmd.OutOrStdout(), cwd, time.Now().UTC())
 	},
 }
 
-func runDrift(ctx context.Context, out io.Writer, root string) error {
+func runDrift(ctx context.Context, out io.Writer, root string, now time.Time) error {
 	fs := storage.New(root)
 	g, err := fs.LoadGlossary(ctx, storage.RepoID(""))
 	if err != nil {
@@ -177,13 +185,169 @@ func runDrift(ctx context.Context, out io.Writer, root string) error {
 		return nil
 	}
 
-	files := map[string]struct{}{}
-	for _, h := range hits {
-		files[h.File] = struct{}{}
-		fmt.Fprintf(out, "%s:%d: %q -> canonical: %s\n", h.File, h.Line, h.Synonym, h.Canonical)
+	candidates := groupHits(hits)
+
+	existing, err := fs.AllIssueRefs(ctx, storage.RepoID(""))
+	if err != nil {
+		return fmt.Errorf("list existing observations: %w", err)
 	}
-	fmt.Fprintf(out, "\n%d %s across %d %s\n", len(hits), pluralize("hit", len(hits)), len(files), pluralize("file", len(files)))
+	existingSlugs := map[string]bool{}
+	maxNumber := 0
+	for _, ref := range existing {
+		existingSlugs[slugFromPath(ref.Path)] = true
+		if ref.Number > maxNumber {
+			maxNumber = ref.Number
+		}
+	}
+
+	newCount := 0
+	skipCount := 0
+	nextNumber := maxNumber + 1
+	for _, c := range candidates {
+		slug := slugify(c.Synonym) + "-" + slugify(c.Canonical)
+		if existingSlugs[slug] {
+			skipCount++
+			continue
+		}
+		state := storage.IssueState{
+			Ref: storage.IssueRef{
+				Number: nextNumber,
+				Path:   fmt.Sprintf("%04d-%s.md", nextNumber, slug),
+			},
+			Status:  storage.IssueOpen,
+			Updated: now,
+			Body:    candidateBody(c),
+		}
+		if err := fs.RecordIssueState(ctx, storage.RepoID(""), state); err != nil {
+			return fmt.Errorf("write observation %s: %w", state.Ref.Path, err)
+		}
+		newCount++
+		nextNumber++
+	}
+
+	fmt.Fprintf(out, "%d %s: %d new (filed), %d existing\n",
+		len(candidates), pluralize("candidate", len(candidates)), newCount, skipCount)
 	return nil
+}
+
+// candidate is one observation-worth of evidence: every place a single
+// synonym drifts from a single canonical, across the whole tree.
+type candidate struct {
+	Synonym   string
+	Canonical string
+	Files     []fileCitation // first-seen order
+}
+
+// fileCitation is the per-file evidence inside a candidate: which lines
+// in this file contain the synonym.
+type fileCitation struct {
+	File  string
+	Lines []int // sorted, deduped
+}
+
+func groupHits(hits []scout.Hit) []candidate {
+	// Key on (synonym lowercased, canonical). Synonyms are case-insensitive
+	// in scout, so "Vocabulary" and "vocabulary" fold to one candidate.
+	// Multiple matches on the same line dedupe to one citation.
+	type key struct{ syn, canonical string }
+	type bag struct {
+		fileOrder []string
+		lines     map[string]map[int]bool
+	}
+	bags := map[key]*bag{}
+	out := map[key]candidate{}
+	var order []key
+
+	for _, h := range hits {
+		synLower := strings.ToLower(h.Synonym)
+		k := key{syn: synLower, canonical: h.Canonical}
+		b, ok := bags[k]
+		if !ok {
+			b = &bag{lines: map[string]map[int]bool{}}
+			bags[k] = b
+			out[k] = candidate{Synonym: synLower, Canonical: h.Canonical}
+			order = append(order, k)
+		}
+		if b.lines[h.File] == nil {
+			b.lines[h.File] = map[int]bool{}
+			b.fileOrder = append(b.fileOrder, h.File)
+		}
+		b.lines[h.File][h.Line] = true
+	}
+
+	result := make([]candidate, 0, len(order))
+	for _, k := range order {
+		c := out[k]
+		b := bags[k]
+		for _, file := range b.fileOrder {
+			lines := make([]int, 0, len(b.lines[file]))
+			for ln := range b.lines[file] {
+				lines = append(lines, ln)
+			}
+			sort.Ints(lines)
+			c.Files = append(c.Files, fileCitation{File: file, Lines: lines})
+		}
+		result = append(result, c)
+	}
+	return result
+}
+
+func candidateBody(c candidate) string {
+	var b strings.Builder
+	totalLines := 0
+	for _, f := range c.Files {
+		totalLines += len(f.Lines)
+	}
+	fmt.Fprintf(&b, "Synonym `%s` appeared in %d %s (%d %s). The glossary canonicalizes this concept as `%s`.\n\n",
+		c.Synonym, len(c.Files), pluralize("file", len(c.Files)),
+		totalLines, pluralize("occurrence", totalLines), c.Canonical)
+	b.WriteString("Citations:\n")
+	for _, f := range c.Files {
+		fmt.Fprintf(&b, "- %s:", f.File)
+		for i, ln := range f.Lines {
+			if i == 0 {
+				fmt.Fprintf(&b, " %d", ln)
+			} else {
+				fmt.Fprintf(&b, ", %d", ln)
+			}
+		}
+		b.WriteByte('\n')
+	}
+	return b.String()
+}
+
+// slugify returns a filesystem-safe lowercase slug. Non-alphanumeric
+// runs collapse to single dashes; leading and trailing dashes are
+// trimmed. Used for observation filenames.
+func slugify(s string) string {
+	var b strings.Builder
+	lastDash := true // leading dash suppression
+	for _, r := range strings.ToLower(s) {
+		switch {
+		case (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9'):
+			b.WriteRune(r)
+			lastDash = false
+		default:
+			if !lastDash {
+				b.WriteByte('-')
+				lastDash = true
+			}
+		}
+	}
+	return strings.TrimRight(b.String(), "-")
+}
+
+var slugStripRe = regexp.MustCompile(`^\d+-(.+)$`)
+
+// slugFromPath extracts the slug part of an observation filename:
+// "0001-vocabulary-docs-thesis-md.md" -> "vocabulary-docs-thesis-md".
+// Returns the input (minus extension) if the NNNN- prefix is absent.
+func slugFromPath(path string) string {
+	base := strings.TrimSuffix(filepath.Base(path), ".md")
+	if m := slugStripRe.FindStringSubmatch(base); len(m) == 2 {
+		return m[1]
+	}
+	return base
 }
 
 func pluralize(s string, n int) string {

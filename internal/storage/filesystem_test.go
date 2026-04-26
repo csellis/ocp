@@ -145,6 +145,61 @@ func TestLoadOpenIssues_EmptyDir(t *testing.T) {
 	}
 }
 
+func TestAllIssueRefs(t *testing.T) {
+	root := t.TempDir()
+	fs := New(root)
+	ctx := context.Background()
+	now := mustTime(t, "2026-04-26T10:00:00Z")
+
+	// File two: one open, one closed.
+	open := IssueState{
+		Ref:     IssueRef{Number: 1, Path: "0001-open.md"},
+		Status:  IssueOpen,
+		Updated: now,
+		Body:    "open obs",
+	}
+	closed := IssueState{
+		Ref:     IssueRef{Number: 2, Path: "0002-closed.md"},
+		Status:  IssueClosed,
+		Updated: now,
+		Body:    "closed obs",
+	}
+	if err := fs.RecordIssueState(ctx, testRepo, open); err != nil {
+		t.Fatalf("record open: %v", err)
+	}
+	if err := fs.RecordIssueState(ctx, testRepo, closed); err != nil {
+		t.Fatalf("record closed: %v", err)
+	}
+
+	refs, err := fs.AllIssueRefs(ctx, testRepo)
+	if err != nil {
+		t.Fatalf("AllIssueRefs: %v", err)
+	}
+	if len(refs) != 2 {
+		t.Fatalf("want 2 refs, got %d: %#v", len(refs), refs)
+	}
+	got := map[string]bool{}
+	for _, r := range refs {
+		got[r.Path] = true
+	}
+	for _, want := range []string{"0001-open.md", "0002-closed.md"} {
+		if !got[want] {
+			t.Errorf("missing %s in refs %#v", want, refs)
+		}
+	}
+}
+
+func TestAllIssueRefs_EmptyRepo(t *testing.T) {
+	fs := New(t.TempDir())
+	refs, err := fs.AllIssueRefs(context.Background(), testRepo)
+	if err != nil {
+		t.Fatalf("AllIssueRefs: %v", err)
+	}
+	if len(refs) != 0 {
+		t.Errorf("want empty, got %v", refs)
+	}
+}
+
 func TestIssueLifecycle(t *testing.T) {
 	root := t.TempDir()
 	fs := New(root)
