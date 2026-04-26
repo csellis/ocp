@@ -1,0 +1,58 @@
+# golangci-lint configuration for OCP. Schema: v2 (golangci-lint >= 2.0).
+#
+# Project rule: gofmt, go vet, golangci-lint run must pass before commit.
+# Keep this set tight. New linters are additive surface area for the agent
+# to argue with; only add when a real defect slips past the existing set.
+
+version: "2"
+
+run:
+  timeout: 5m
+
+linters:
+  default: none
+  enable:
+    - bodyclose      # http response bodies must be closed
+    - errcheck       # unchecked errors
+    - errorlint      # error wrapping correctness (errors.Is / %w)
+    - gocritic       # opinionated, mostly safe diagnostics
+    - govet          # the standard `go vet` checks
+    - ineffassign    # assignments whose result is never used
+    - misspell       # english spelling in identifiers and comments
+    - revive         # successor to golint; style and correctness rules
+    - staticcheck    # the heavyweight analyzer (subsumes gosimple in v2)
+    - unused         # dead code and identifiers
+
+  settings:
+    errcheck:
+      check-type-assertions: true
+      check-blank: true
+    revive:
+      rules:
+        - name: var-naming
+        - name: error-return
+        - name: error-naming
+        - name: if-return
+        - name: increment-decrement
+        - name: range
+        - name: receiver-naming
+        - name: time-naming
+        - name: unexported-return
+        - name: indent-error-flow
+        - name: errorf
+
+  exclusions:
+    rules:
+      - path: _test\.go
+        linters:
+          - errcheck
+          - gocritic
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/csellis/ocp

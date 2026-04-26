@@ -12,7 +12,7 @@ These rules apply to humans and agents alike.
 
 ## Code
 
-- Go 1.22 minimum.
+- Go 1.25 minimum.
 - Standard library before third-party. Justify every dependency in the PR description.
 - `gofmt`, `go vet`, `golangci-lint run` must pass before commit.
 - No `interface{}` / `any` unless an external API forces it. Use generics.
