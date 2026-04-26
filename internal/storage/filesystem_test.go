@@ -82,6 +82,27 @@ func TestSaveGlossary_CreatesOcpDir(t *testing.T) {
 	}
 }
 
+// TestAtomicWrite_FileMode pins the mode of files written through atomicWrite
+// to 0o644. os.CreateTemp defaults to 0o600 which is too restrictive for
+// project-level files (glossary, log, observations all want world-readable
+// for ergonomic editor and tool access).
+func TestAtomicWrite_FileMode(t *testing.T) {
+	root := t.TempDir()
+	fs := New(root)
+	ctx := context.Background()
+
+	if err := fs.SaveGlossary(ctx, testRepo, Glossary{Terms: []Term{{Canonical: "x", Definition: "y"}}}); err != nil {
+		t.Fatalf("SaveGlossary: %v", err)
+	}
+	info, err := os.Stat(filepath.Join(root, ".ocp", "glossary.md"))
+	if err != nil {
+		t.Fatalf("stat glossary: %v", err)
+	}
+	if got := info.Mode().Perm(); got != 0o644 {
+		t.Errorf("glossary mode: want 0o644, got %#o", got)
+	}
+}
+
 func TestAppendLog(t *testing.T) {
 	root := t.TempDir()
 	fs := New(root)

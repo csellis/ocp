@@ -127,9 +127,16 @@ func (fs *Filesystem) RecordIssueState(_ context.Context, _ RepoID, state IssueS
 	return nil
 }
 
+// projectFileMode is the mode for every file atomicWrite produces. 0o644
+// (world-readable) suits glossaries, logs, and observation files that
+// editors and tools should be able to open without ceremony. os.CreateTemp
+// defaults to 0o600, which is fine for secrets but wrong for project state.
+const projectFileMode os.FileMode = 0o644
+
 // atomicWrite writes data to path via a same-directory temp file followed
 // by os.Rename. POSIX rename within one filesystem is atomic; partial
-// writes never become visible.
+// writes never become visible. The result is chmodded to projectFileMode
+// before the rename so the visible file always has the right mode.
 func atomicWrite(path string, data []byte) error {
 	dir := filepath.Dir(path)
 	tmp, err := os.CreateTemp(dir, filepath.Base(path)+".tmp.*")
@@ -146,6 +153,10 @@ func atomicWrite(path string, data []byte) error {
 	if err := tmp.Close(); err != nil {
 		_ = os.Remove(tmpPath)
 		return fmt.Errorf("close temp: %w", err)
+	}
+	if err := os.Chmod(tmpPath, projectFileMode); err != nil {
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("chmod temp: %w", err)
 	}
 	if err := os.Rename(tmpPath, path); err != nil {
 		_ = os.Remove(tmpPath)
