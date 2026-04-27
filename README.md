@@ -1,5 +1,9 @@
 # OCP
 
+[![CI](https://github.com/csellis/ocp/actions/workflows/ci.yml/badge.svg)](https://github.com/csellis/ocp/actions/workflows/ci.yml)
+[![Go Reference](https://pkg.go.dev/badge/github.com/csellis/ocp.svg)](https://pkg.go.dev/github.com/csellis/ocp)
+[![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
+
 Outside Context Problem. Open-Closed Principle. Both meanings hold.
 
 OCP is a small agent that watches a codebase for drift in its ubiquitous language: the canonical names a team has agreed on for the concepts in their domain. When a new term appears that conflicts with the glossary, or when one canonical concept is being expressed in three different words, OCP files an issue. The issue is the conversation. The glossary is the memory.
@@ -92,6 +96,10 @@ The project name is itself a Banks reference. In *Excession* (1996), an Outside 
 The voice and naming convention come from Banks's [Culture novels](https://en.wikipedia.org/wiki/Culture_series) more broadly. In the Culture, the AIs that run civilization-scale infrastructure name themselves with full sentences, speak with idiosyncratic taste, and do their work for the substance of the work. OCP is not a Culture Mind in any literal sense, it is a small agent with narrow scope. The Banks reference is background flavor and discipline: speak rarely, sign your work, prefer one good observation over ten noisy ones.
 
 Each deployed instance picks a Banks-style ship-name from a curated pack on first run. The dogfood instance is `Drone Honor Thy Error As A Hidden Intention`.
+
+## Contributing
+
+See `CONTRIBUTING.md` for the workflow. `AGENTS.md` is the shared contract for humans and AI assistants alike; `CLAUDE.md` adds Claude-specific guidance on top. Security reports go to me@chrisellis.dev (`SECURITY.md`).
 
 ## License
 

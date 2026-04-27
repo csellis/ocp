@@ -20,12 +20,16 @@ This file exists to answer "where is X?" in one read. Keep it accurate. When a n
 | `CLAUDE.md` | Claude-specific instructions, committed. |
 | `CLAUDE.local.md` | Maintainer's private Claude instructions. Gitignored. |
 | `LICENSE`, `NOTICE` | Apache 2.0 + attribution. |
-| `todo.md` | Maintainer scratchpad. Not a roadmap. |
+| `CONTRIBUTING.md` | Contributor workflow. Setup, voice, agentic-coding files. |
+| `SECURITY.md` | Vulnerability reporting policy. |
+| `CHANGELOG.md` | User-facing change log per Keep a Changelog. |
 | `CODEMAP.md` | This file. |
+| `.github/` | CI and release workflows; issue and PR templates. |
+| `.goreleaser.yaml` | Release-pipeline build matrix and archive shape. |
 
 ## Binaries
 
-- `cmd/ocp/main.go` — the only binary. Subcommands present today: `scan`, `drift`. The `respond` and `serve` subcommands land in later slices (see `docs/PLAN.md`).
+- `cmd/ocp/main.go` — the only binary. Subcommands present today: `scan`, `drift`, `respond`. The `serve` subcommand lands in later slices (see `docs/PLAN.md`).
 
 ## Packages
 
@@ -88,7 +92,7 @@ Planned, not yet present (see `docs/PLAN.md` for the build order):
 | Change Claude's per-maintainer behavior | `CLAUDE.local.md` |
 | Read the thesis or design rationale | `docs/THESIS.md`, `docs/ARCHITECTURE.md` |
 | See what ships next | `docs/PLAN.md` |
-| See what is in the maintainer's mind | `todo.md` |
+| See what is in the maintainer's mind | `docs/todo.md` |
 
 ## Dependency direction
 
