@@ -232,9 +232,11 @@ func runDrift(ctx context.Context, out io.Writer, root string, now time.Time) er
 				Number: nextNumber,
 				Path:   fmt.Sprintf("%04d-%s.md", nextNumber, slug),
 			},
-			Status:  storage.IssueOpen,
-			Updated: now,
-			Body:    candidateBody(c),
+			Status:    storage.IssueOpen,
+			Updated:   now,
+			Body:      candidateBody(c),
+			Canonical: c.Canonical,
+			Synonym:   c.Synonym,
 		}
 		if err := fs.RecordIssueState(ctx, storage.RepoID(""), state); err != nil {
 			return fmt.Errorf("write observation %s: %w", state.Ref.Path, err)
@@ -380,9 +382,200 @@ func pluralize(s string, n int) string {
 	return s + "s"
 }
 
+var respondCmd = &cobra.Command{
+	Use:   "respond",
+	Short: "Read replies on open observations and apply close / synonym actions.",
+	Long: `Respond walks every open observation in .ocp/conversation/ and looks
+for a "## Reply" section the maintainer has appended to the body.
+
+Recognized reply formats (case-insensitive):
+
+  close: <reason>      Close the observation. The reason is appended to
+                       the body and the file moves to conversation/closed/.
+  synonym: <term>      Add <term> as a declared synonym of the
+                       observation's canonical, then close the
+                       observation with a closure note.
+  stand by             Leave the observation open. No state change.
+
+Observations without a Reply section (or with an unrecognized reply)
+are skipped silently. The summary line reports counts per outcome.
+
+This v0.1 surface is a keyword parser. v0.2 replaces it with the
+LLM-driven conversation loop the architecture describes.
+
+Exit codes:
+  0  success
+  1  unrecoverable error (unreadable observation, glossary write failure)`,
+	RunE: func(cmd *cobra.Command, _ []string) error {
+		cwd, err := os.Getwd()
+		if err != nil {
+			return fmt.Errorf("cwd: %w", err)
+		}
+		return runRespond(cmd.Context(), cmd.OutOrStdout(), cwd, time.Now().UTC())
+	},
+}
+
+type replyAction struct {
+	kind  replyKind
+	value string
+}
+
+type replyKind int
+
+const (
+	replyNone replyKind = iota
+	replyClose
+	replySynonym
+	replyStandBy
+)
+
+// parseReply scans an observation body for a "## Reply" section and
+// extracts the recognized intent. Anything outside the recognized
+// keyword set returns replyNone (the run skips silently).
+func parseReply(body string) replyAction {
+	var replyLines []string
+	inReply := false
+	for _, line := range strings.Split(body, "\n") {
+		if strings.HasPrefix(line, "## ") {
+			heading := strings.TrimSpace(strings.ToLower(line[3:]))
+			if heading == "reply" {
+				inReply = true
+				continue
+			}
+			if inReply {
+				break
+			}
+		}
+		if inReply {
+			replyLines = append(replyLines, line)
+		}
+	}
+	if !inReply {
+		return replyAction{kind: replyNone}
+	}
+	text := strings.TrimSpace(strings.Join(replyLines, "\n"))
+	if text == "" {
+		return replyAction{kind: replyNone}
+	}
+	lower := strings.ToLower(text)
+	switch {
+	case strings.HasPrefix(lower, "close:"):
+		return replyAction{kind: replyClose, value: strings.TrimSpace(text[len("close:"):])}
+	case strings.HasPrefix(lower, "synonym:"):
+		return replyAction{kind: replySynonym, value: strings.TrimSpace(text[len("synonym:"):])}
+	case strings.HasPrefix(lower, "stand by"):
+		return replyAction{kind: replyStandBy}
+	}
+	return replyAction{kind: replyNone}
+}
+
+func runRespond(ctx context.Context, out io.Writer, root string, now time.Time) error {
+	fs := storage.New(root)
+	g, err := fs.LoadGlossary(ctx, storage.RepoID(""))
+	if err != nil {
+		if errors.Is(err, storage.ErrNotFound) {
+			fmt.Fprintln(out, "no glossary at .ocp/glossary.md; nothing to respond to")
+			return nil
+		}
+		return fmt.Errorf("load glossary: %w", err)
+	}
+
+	refs, err := fs.LoadOpenIssues(ctx, storage.RepoID(""))
+	if err != nil {
+		return fmt.Errorf("list open issues: %w", err)
+	}
+	if len(refs) == 0 {
+		fmt.Fprintln(out, "no open observations")
+		return nil
+	}
+
+	var (
+		closedCount, glossaryUpdates, skipped int
+		actions                               []string
+	)
+	for _, ref := range refs {
+		state, err := fs.LoadIssue(ctx, storage.RepoID(""), ref)
+		if err != nil {
+			return fmt.Errorf("load %s: %w", ref.Path, err)
+		}
+		action := parseReply(state.Body)
+		switch action.kind {
+		case replyNone, replyStandBy:
+			skipped++
+		case replyClose:
+			state.Status = storage.IssueClosed
+			state.Updated = now
+			state.Body = strings.TrimRight(state.Body, "\n") + "\n\nClosed: " + action.value + "\n"
+			if err := fs.RecordIssueState(ctx, storage.RepoID(""), state); err != nil {
+				return fmt.Errorf("close %s: %w", ref.Path, err)
+			}
+			closedCount++
+			actions = append(actions, fmt.Sprintf("closed %s: %s", ref.Path, action.value))
+		case replySynonym:
+			updated := addSynonymTo(&g, state.Canonical, action.value)
+			if updated {
+				if err := fs.SaveGlossary(ctx, storage.RepoID(""), g); err != nil {
+					return fmt.Errorf("save glossary: %w", err)
+				}
+				glossaryUpdates++
+			}
+			state.Status = storage.IssueClosed
+			state.Updated = now
+			note := fmt.Sprintf("Closed: added `%s` as synonym of `%s`.", action.value, state.Canonical)
+			if !updated {
+				note = fmt.Sprintf("Closed: `%s` was already a synonym of `%s`.", action.value, state.Canonical)
+			}
+			state.Body = strings.TrimRight(state.Body, "\n") + "\n\n" + note + "\n"
+			if err := fs.RecordIssueState(ctx, storage.RepoID(""), state); err != nil {
+				return fmt.Errorf("close %s: %w", ref.Path, err)
+			}
+			closedCount++
+			actions = append(actions, fmt.Sprintf("synonym `%s` -> `%s`, closed %s", action.value, state.Canonical, ref.Path))
+		}
+	}
+
+	fmt.Fprintf(out, "respond: %d open, %d closed, %d glossary updates, %d skipped\n",
+		len(refs), closedCount, glossaryUpdates, skipped)
+
+	if closedCount > 0 || glossaryUpdates > 0 {
+		var body strings.Builder
+		body.WriteString("respond:")
+		for _, a := range actions {
+			fmt.Fprintf(&body, "\n- %s", a)
+		}
+		if err := fs.AppendLog(ctx, storage.RepoID(""), storage.LogEntry{
+			At:   now,
+			Body: body.String(),
+		}); err != nil {
+			return fmt.Errorf("append log: %w", err)
+		}
+	}
+	return nil
+}
+
+// addSynonymTo mutates g in place, adding term to the synonym list of
+// the given canonical. Returns true if the glossary changed (canonical
+// found and term not already present), false otherwise.
+func addSynonymTo(g *storage.Glossary, canonical, term string) bool {
+	for i, t := range g.Terms {
+		if t.Canonical != canonical {
+			continue
+		}
+		for _, s := range t.Synonyms {
+			if s == term {
+				return false
+			}
+		}
+		g.Terms[i].Synonyms = append(g.Terms[i].Synonyms, term)
+		return true
+	}
+	return false
+}
+
 func init() {
 	rootCmd.AddCommand(scanCmd)
 	rootCmd.AddCommand(driftCmd)
+	rootCmd.AddCommand(respondCmd)
 }
 
 func main() {

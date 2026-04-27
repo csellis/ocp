@@ -137,11 +137,25 @@ func isExcludedDir(path, root, name string) bool {
 }
 
 // isAlwaysExcluded returns true for paths OCP must never scan, even
-// when git tracks them. .ocp/ holds OCP's own state and would produce
-// self-referential observations (the glossary literally contains every
-// declared synonym).
+// when git tracks them.
+//
+//   - .ocp/         holds OCP's own state. Self-referential observations
+//     (the glossary literally contains every declared
+//     synonym) are noise, not signal.
+//   - testdata/     Go convention reserves this directory name for
+//     fixture files. Eval corpus fixtures and any other
+//     testdata/ subtrees are intentional uses of synonyms,
+//     not drift to surface.
+//
+// Both names are matched as path components at any depth (including the
+// root), normalized to forward slashes for cross-platform safety.
 func isAlwaysExcluded(rel string) bool {
-	return rel == ".ocp" || strings.HasPrefix(rel, ".ocp/")
+	for _, p := range strings.Split(filepath.ToSlash(rel), "/") {
+		if p == ".ocp" || p == "testdata" {
+			return true
+		}
+	}
+	return false
 }
 
 func isScannable(name string) bool {

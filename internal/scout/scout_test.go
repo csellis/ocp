@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strings"
 	"testing"
 
 	"github.com/csellis/ocp/internal/storage"
@@ -174,6 +175,39 @@ func TestDetect_GitignoreRespected(t *testing.T) {
 	}
 	if gotFiles["ignored.md"] {
 		t.Errorf("ignored.md should be skipped via .gitignore, got %v", gotFiles)
+	}
+}
+
+func TestDetect_TestdataAlwaysExcluded(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+	root := t.TempDir()
+	runGit(t, root, "init", "-q")
+	writeFile(t, root, "tracked.md", "vocabulary here.\n")
+	writeFile(t, root, "fixtures/testdata/sample.md", "vocabulary here too.\n")
+	writeFile(t, root, "testdata/top.md", "and vocabulary at the top.\n")
+	runGit(t, root, "add", ".")
+	runGit(t, root, "commit", "-q", "-m", "init")
+
+	g := storage.Glossary{Terms: []storage.Term{
+		{Canonical: "glossary", Synonyms: []string{"vocabulary"}},
+	}}
+	hits, err := Detect(context.Background(), root, g)
+	if err != nil {
+		t.Fatalf("Detect: %v", err)
+	}
+	files := map[string]bool{}
+	for _, h := range hits {
+		files[h.File] = true
+	}
+	if !files["tracked.md"] {
+		t.Errorf("expected tracked.md in hits, got %v", files)
+	}
+	for f := range files {
+		if strings.Contains(f, "testdata") {
+			t.Errorf("path with testdata component must be excluded, got %q", f)
+		}
 	}
 }
 

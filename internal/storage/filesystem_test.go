@@ -200,6 +200,80 @@ func TestAllIssueRefs_EmptyRepo(t *testing.T) {
 	}
 }
 
+func TestLoadIssue_RoundTrip(t *testing.T) {
+	root := t.TempDir()
+	fs := New(root)
+	ctx := context.Background()
+	now := mustTime(t, "2026-04-26T10:00:00Z")
+
+	want := IssueState{
+		Ref:       IssueRef{Number: 7, Path: "0007-vocab-glossary.md"},
+		Status:    IssueOpen,
+		Updated:   now,
+		Body:      "Hello.\n\nObservation body here.",
+		Canonical: "glossary",
+		Synonym:   "vocabulary",
+	}
+	if err := fs.RecordIssueState(ctx, testRepo, want); err != nil {
+		t.Fatalf("record: %v", err)
+	}
+
+	got, err := fs.LoadIssue(ctx, testRepo, want.Ref)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if got.Ref != want.Ref {
+		t.Errorf("Ref: want %#v got %#v", want.Ref, got.Ref)
+	}
+	if got.Status != want.Status {
+		t.Errorf("Status: want %v got %v", want.Status, got.Status)
+	}
+	if !got.Updated.Equal(want.Updated) {
+		t.Errorf("Updated: want %v got %v", want.Updated, got.Updated)
+	}
+	if got.Canonical != want.Canonical {
+		t.Errorf("Canonical: want %q got %q", want.Canonical, got.Canonical)
+	}
+	if got.Synonym != want.Synonym {
+		t.Errorf("Synonym: want %q got %q", want.Synonym, got.Synonym)
+	}
+	if !strings.Contains(got.Body, "Observation body here") {
+		t.Errorf("Body missing content: %q", got.Body)
+	}
+}
+
+func TestLoadIssue_FromClosedDir(t *testing.T) {
+	root := t.TempDir()
+	fs := New(root)
+	ctx := context.Background()
+	now := mustTime(t, "2026-04-26T10:00:00Z")
+
+	state := IssueState{
+		Ref:     IssueRef{Number: 1, Path: "0001-foo.md"},
+		Status:  IssueClosed,
+		Updated: now,
+		Body:    "closed",
+	}
+	if err := fs.RecordIssueState(ctx, testRepo, state); err != nil {
+		t.Fatalf("record: %v", err)
+	}
+	got, err := fs.LoadIssue(ctx, testRepo, state.Ref)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if got.Status != IssueClosed {
+		t.Errorf("want IssueClosed, got %v", got.Status)
+	}
+}
+
+func TestLoadIssue_Missing(t *testing.T) {
+	fs := New(t.TempDir())
+	_, err := fs.LoadIssue(context.Background(), testRepo, IssueRef{Path: "missing.md"})
+	if !errors.Is(err, ErrNotFound) {
+		t.Errorf("want ErrNotFound, got %v", err)
+	}
+}
+
 func TestIssueLifecycle(t *testing.T) {
 	root := t.TempDir()
 	fs := New(root)

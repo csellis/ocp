@@ -128,6 +128,29 @@ func (fs *Filesystem) AllIssueRefs(_ context.Context, _ RepoID) ([]IssueRef, err
 	return refs, nil
 }
 
+// LoadIssue reads one observation file and returns its full state. The
+// ref.Path basename is looked up in conversation/ first, then in
+// conversation/closed/. Returns ErrNotFound if no file matches.
+func (fs *Filesystem) LoadIssue(_ context.Context, _ RepoID, ref IssueRef) (IssueState, error) {
+	for _, dir := range []string{fs.conversationDir(), fs.closedDir()} {
+		path := filepath.Join(dir, ref.Path)
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			return IssueState{}, fmt.Errorf("read %s: %w", path, err)
+		}
+		state, err := parseObservation(raw)
+		if err != nil {
+			return IssueState{}, fmt.Errorf("parse %s: %w", path, err)
+		}
+		state.Ref = ref
+		return state, nil
+	}
+	return IssueState{}, ErrNotFound
+}
+
 func (fs *Filesystem) RecordIssueState(_ context.Context, _ RepoID, state IssueState) error {
 	if state.Ref.Path == "" {
 		return errors.New("RecordIssueState: empty Ref.Path")
@@ -278,10 +301,70 @@ func serializeObservation(s IssueState) []byte {
 	fmt.Fprintf(&b, "Number: %d\n", s.Ref.Number)
 	fmt.Fprintf(&b, "Status: %s\n", statusString(s.Status))
 	fmt.Fprintf(&b, "Updated: %s\n", s.Updated.UTC().Format(time.RFC3339))
+	if s.Canonical != "" {
+		fmt.Fprintf(&b, "Canonical: %s\n", s.Canonical)
+	}
+	if s.Synonym != "" {
+		fmt.Fprintf(&b, "Synonym: %s\n", s.Synonym)
+	}
 	b.WriteString("---\n\n")
 	b.WriteString(strings.TrimRight(s.Body, "\n"))
 	b.WriteByte('\n')
 	return []byte(b.String())
+}
+
+// parseObservation is the inverse of serializeObservation. Tolerates
+// missing optional fields (Canonical, Synonym were added after the
+// initial format; observations written before them parse with empty
+// strings for those fields).
+func parseObservation(raw []byte) (IssueState, error) {
+	s := string(raw)
+	if !strings.HasPrefix(s, "---\n") {
+		return IssueState{}, errors.New("missing opening frontmatter delimiter")
+	}
+	rest := s[len("---\n"):]
+	end := strings.Index(rest, "\n---\n")
+	if end == -1 {
+		return IssueState{}, errors.New("missing closing frontmatter delimiter")
+	}
+	frontmatter := rest[:end]
+	body := strings.TrimLeft(rest[end+len("\n---\n"):], "\n")
+
+	var state IssueState
+	for _, line := range strings.Split(frontmatter, "\n") {
+		if line == "" {
+			continue
+		}
+		i := strings.Index(line, ":")
+		if i == -1 {
+			continue
+		}
+		key := strings.TrimSpace(line[:i])
+		val := strings.TrimSpace(line[i+1:])
+		switch key {
+		case "Number":
+			n, _ := strconv.Atoi(val)
+			state.Ref.Number = n
+		case "Status":
+			switch val {
+			case "open":
+				state.Status = IssueOpen
+			case "closed":
+				state.Status = IssueClosed
+			}
+		case "Updated":
+			t, err := time.Parse(time.RFC3339, val)
+			if err == nil {
+				state.Updated = t
+			}
+		case "Canonical":
+			state.Canonical = val
+		case "Synonym":
+			state.Synonym = val
+		}
+	}
+	state.Body = body
+	return state, nil
 }
 
 func statusString(s IssueStatus) string {

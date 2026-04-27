@@ -26,6 +26,7 @@ type Storage interface {
 	AppendLog(ctx context.Context, repo RepoID, entry LogEntry) error
 	LoadOpenIssues(ctx context.Context, repo RepoID) ([]IssueRef, error)
 	AllIssueRefs(ctx context.Context, repo RepoID) ([]IssueRef, error)
+	LoadIssue(ctx context.Context, repo RepoID, ref IssueRef) (IssueState, error)
 	RecordIssueState(ctx context.Context, repo RepoID, state IssueState) error
 }
 
@@ -72,12 +73,15 @@ const (
 	IssueClosed
 )
 
-// IssueState is what the conversation loop hands back to storage when an
-// observation transitions. The Body is the closing comment when status is
-// IssueClosed; empty otherwise.
+// IssueState is the full state of one observation as held in storage.
+// Body is the rendered observation text; Canonical and Synonym record
+// the drift event the observation concerns (so respond can update the
+// glossary without reparsing the body).
 type IssueState struct {
-	Ref     IssueRef
-	Status  IssueStatus
-	Updated time.Time
-	Body    string
+	Ref       IssueRef
+	Status    IssueStatus
+	Updated   time.Time
+	Body      string
+	Canonical string // glossary canonical the observation references
+	Synonym   string // synonym whose use triggered the observation
 }

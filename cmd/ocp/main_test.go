@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -406,6 +407,214 @@ func TestRunDrift_ZeroHitsDoesNotLog(t *testing.T) {
 	afterLog, _ := os.ReadFile(filepath.Join(root, ".ocp", "log.md"))
 	if string(beforeLog) != string(afterLog) {
 		t.Errorf("zero-hit drift should not change log.md\nbefore:\n%s\nafter:\n%s", beforeLog, afterLog)
+	}
+}
+
+func TestParseReply(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+		want replyAction
+	}{
+		{
+			name: "no reply section",
+			body: "Hello.\n\nObservation body.\n",
+			want: replyAction{kind: replyNone},
+		},
+		{
+			name: "empty reply section",
+			body: "Hello.\n\n## Reply\n\n",
+			want: replyAction{kind: replyNone},
+		},
+		{
+			name: "close action",
+			body: "Hello.\n\n## Reply\n\nclose: pedagogical, not drift\n",
+			want: replyAction{kind: replyClose, value: "pedagogical, not drift"},
+		},
+		{
+			name: "synonym action",
+			body: "Hello.\n\n## Reply\n\nsynonym: vocab\n",
+			want: replyAction{kind: replySynonym, value: "vocab"},
+		},
+		{
+			name: "stand by",
+			body: "Hello.\n\n## Reply\n\nstand by, will resolve in next sprint\n",
+			want: replyAction{kind: replyStandBy},
+		},
+		{
+			name: "unrecognized reply",
+			body: "Hello.\n\n## Reply\n\nmaybe later?\n",
+			want: replyAction{kind: replyNone},
+		},
+		{
+			name: "case-insensitive heading + keyword",
+			body: "Hello.\n\n## REPLY\n\nCLOSE: shouty closure\n",
+			want: replyAction{kind: replyClose, value: "shouty closure"},
+		},
+		{
+			name: "reply followed by another section",
+			body: "Hello.\n\n## Reply\n\nclose: yes\n\n## Notes\n\nmore stuff\n",
+			want: replyAction{kind: replyClose, value: "yes"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := parseReply(tc.body)
+			if got.kind != tc.want.kind || got.value != tc.want.value {
+				t.Errorf("parseReply: want %+v, got %+v", tc.want, got)
+			}
+		})
+	}
+}
+
+func TestRunRespond_NoOpenIssues(t *testing.T) {
+	root := t.TempDir()
+	ctx := context.Background()
+	if err := runScan(ctx, &bytes.Buffer{}, root, fixedNow); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	var buf bytes.Buffer
+	if err := runRespond(ctx, &buf, root, fixedNow); err != nil {
+		t.Fatalf("runRespond: %v", err)
+	}
+	if !strings.Contains(buf.String(), "no open observations") {
+		t.Errorf("expected 'no open observations', got:\n%s", buf.String())
+	}
+}
+
+func TestRunRespond_NoGlossary(t *testing.T) {
+	root := t.TempDir()
+	var buf bytes.Buffer
+	if err := runRespond(context.Background(), &buf, root, fixedNow); err != nil {
+		t.Fatalf("runRespond: %v", err)
+	}
+	if !strings.Contains(buf.String(), "no glossary") {
+		t.Errorf("expected 'no glossary' hint, got:\n%s", buf.String())
+	}
+}
+
+func TestRunRespond_CloseAction(t *testing.T) {
+	root := t.TempDir()
+	ctx := context.Background()
+	if err := runScan(ctx, &bytes.Buffer{}, root, fixedNow); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	writeTestFile(t, root, "doc.md", "the team's vocabulary matters.\n")
+	if err := runDrift(ctx, &bytes.Buffer{}, root, fixedNow); err != nil {
+		t.Fatalf("drift: %v", err)
+	}
+
+	convDir := filepath.Join(root, ".ocp", "conversation")
+	entries, err := os.ReadDir(convDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var obs string
+	for _, e := range entries {
+		if !e.IsDir() {
+			obs = e.Name()
+			break
+		}
+	}
+	if obs == "" {
+		t.Fatal("no observation filed")
+	}
+	obsPath := filepath.Join(convDir, obs)
+	raw, _ := os.ReadFile(obsPath)
+	withReply := string(raw) + "\n## Reply\n\nclose: pedagogical use\n"
+	if err := os.WriteFile(obsPath, []byte(withReply), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var buf bytes.Buffer
+	later := fixedNow.Add(1 * time.Hour)
+	if err := runRespond(ctx, &buf, root, later); err != nil {
+		t.Fatalf("runRespond: %v", err)
+	}
+	if !strings.Contains(buf.String(), "1 closed") {
+		t.Errorf("expected '1 closed', got:\n%s", buf.String())
+	}
+
+	if _, err := os.Stat(obsPath); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("open observation should be gone after close, stat err: %v", err)
+	}
+	closedPath := filepath.Join(convDir, "closed", obs)
+	closedBytes, err := os.ReadFile(closedPath)
+	if err != nil {
+		t.Fatalf("expected closed observation: %v", err)
+	}
+	if !strings.Contains(string(closedBytes), "Closed: pedagogical use") {
+		t.Errorf("missing closure note in:\n%s", closedBytes)
+	}
+}
+
+func TestRunRespond_SynonymAction(t *testing.T) {
+	root := t.TempDir()
+	ctx := context.Background()
+	if err := runScan(ctx, &bytes.Buffer{}, root, fixedNow); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	writeTestFile(t, root, "doc.md", "team has its own vocab.\n")
+	// Add "vocab" as a synonym of glossary so the drift run files an observation.
+	gloss, _ := storage.New(root).LoadGlossary(ctx, storage.RepoID(""))
+	for i := range gloss.Terms {
+		if gloss.Terms[i].Canonical == "glossary" {
+			gloss.Terms[i].Synonyms = append(gloss.Terms[i].Synonyms, "vocab")
+		}
+	}
+	if err := storage.New(root).SaveGlossary(ctx, storage.RepoID(""), gloss); err != nil {
+		t.Fatal(err)
+	}
+	if err := runDrift(ctx, &bytes.Buffer{}, root, fixedNow); err != nil {
+		t.Fatalf("drift: %v", err)
+	}
+
+	convDir := filepath.Join(root, ".ocp", "conversation")
+	entries, _ := os.ReadDir(convDir)
+	var obsPath string
+	for _, e := range entries {
+		if !e.IsDir() {
+			obsPath = filepath.Join(convDir, e.Name())
+			break
+		}
+	}
+	raw, _ := os.ReadFile(obsPath)
+	withReply := string(raw) + "\n## Reply\n\nsynonym: vocab\n"
+	if err := os.WriteFile(obsPath, []byte(withReply), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var buf bytes.Buffer
+	if err := runRespond(ctx, &buf, root, fixedNow); err != nil {
+		t.Fatalf("runRespond: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "1 closed") {
+		t.Errorf("expected '1 closed', got:\n%s", out)
+	}
+	// Glossary update count: vocab was already a synonym (we added it above), so 0.
+	if !strings.Contains(out, "0 glossary updates") {
+		t.Errorf("expected '0 glossary updates' (vocab already present), got:\n%s", out)
+	}
+}
+
+func TestRunRespond_NoReplySkips(t *testing.T) {
+	root := t.TempDir()
+	ctx := context.Background()
+	if err := runScan(ctx, &bytes.Buffer{}, root, fixedNow); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	writeTestFile(t, root, "doc.md", "the team's vocabulary matters.\n")
+	if err := runDrift(ctx, &bytes.Buffer{}, root, fixedNow); err != nil {
+		t.Fatalf("drift: %v", err)
+	}
+
+	var buf bytes.Buffer
+	if err := runRespond(ctx, &buf, root, fixedNow); err != nil {
+		t.Fatalf("runRespond: %v", err)
+	}
+	if !strings.Contains(buf.String(), "1 skipped") {
+		t.Errorf("expected '1 skipped' for observation with no Reply, got:\n%s", buf.String())
 	}
 }
 
