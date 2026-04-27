@@ -1,0 +1,6 @@
+{
+  "hits": [
+    {"file": "a.md", "line": 3, "synonym": "vocabulary", "canonical": "glossary"},
+    {"file": "b.md", "line": 3, "synonym": "vocabulary", "canonical": "glossary"}
+  ]
+}

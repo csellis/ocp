@@ -1,4 +1,4 @@
-.PHONY: all lint fmt vet test build tidy clean
+.PHONY: all lint fmt vet test build tidy clean eval
 
 all: lint test build
 
@@ -38,6 +38,12 @@ bin/ocp: $(shell find cmd internal -name '*.go' 2>/dev/null) go.mod
 
 tidy:
 	go mod tidy
+
+# Run the eval harness. Reads eval/corpus/, runs scout against each,
+# prints a markdown precision/recall report. Always runs from the
+# module root so eval/corpus is found relative to the cwd.
+eval:
+	go run ./eval
 
 clean:
 	rm -rf bin dist

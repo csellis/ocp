@@ -11,6 +11,7 @@ This file exists to answer "where is X?" in one read. Keep it accurate. When a n
 | `cmd/` | CLI entry points. One subdirectory per binary; each has a `main.go`. |
 | `internal/` | Module-private packages. The Go compiler refuses to let anyone outside this module import them. |
 | `docs/` | Long-form prose: thesis, architecture, plan. |
+| `eval/` | Labeled corpus plus runner. `make eval` reports precision/recall on the synonymy task. |
 | `Makefile` | Build, test, lint, format targets. `make all` runs the gauntlet. |
 | `.golangci.yml` | Lint configuration (golangci-lint v2 schema). |
 | `go.mod` | Module manifest. Floor: Go 1.25. |
@@ -40,6 +41,11 @@ Present:
   - `git.go` — `gitTrackedFiles(ctx, root)`. Two short subprocess calls (`git rev-parse`, `git ls-files --cached --others --exclude-standard`) to get the set of paths git considers in-repo. Returns `errNotGitRepo` outside a working tree; caller falls back to walking.
   - `scout_test.go` — detection tests covering matching, multi-word synonyms, word-boundary correctness, dir/extension exclusions, context cancellation, gitignore respect, and the `.ocp/` always-exclude rule.
 
+- `eval/` — eval harness and labeled corpus.
+  - `main.go` — `package main` runner. Walks `corpus/`, runs `scout.Detect` on each example's `testdata/`, computes precision/recall against `expected.json`, prints a markdown report.
+  - `corpus/<NNN-slug>/{testdata/, glossary.md, expected.json}` — one directory per example.
+  - `README.md` — corpus shape and how to add an example.
+
 Planned, not yet present (see `docs/PLAN.md` for the build order):
 
 - `internal/agent/` — pi-style stateful agent primitives.
@@ -48,7 +54,6 @@ Planned, not yet present (see `docs/PLAN.md` for the build order):
 - `internal/triggers/` — invocation surfaces: `cli`, `webhook` (v0.2), `scheduler` (v0.2).
 - `internal/voice/` — observation formatting plus the Oblique Strategies card pack.
 - `internal/names/` — Banks-style ship-name pack.
-- `eval/` — eval harness and labeled corpus.
 
 ## Where to look for things by topic
 
@@ -65,6 +70,8 @@ Planned, not yet present (see `docs/PLAN.md` for the build order):
 | Tune the seed glossary OCP writes on first run | `cmd/ocp/main.go` (`seedGlossary`) |
 | Add a new ocp subcommand | `cmd/ocp/main.go` (declare `*cobra.Command`, register in `init`) |
 | Change how drift candidates become observations | `cmd/ocp/main.go` (`groupHits`, `candidateBody`) |
+| Add or change an eval corpus example | `eval/corpus/<NNN-slug>/`; see `eval/README.md` |
+| Change the eval runner or report format | `eval/main.go` |
 | Change observation filename slug rules | `cmd/ocp/main.go` (`slugify`, `slugFromPath`) |
 | Enumerate every observation (open + closed) | `internal/storage/filesystem.go` (`AllIssueRefs`) |
 | Change build, test, or lint behavior | `Makefile`, `.golangci.yml` |

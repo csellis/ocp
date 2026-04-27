@@ -44,7 +44,7 @@ func (fs *Filesystem) LoadGlossary(_ context.Context, _ RepoID) (Glossary, error
 		}
 		return Glossary{}, fmt.Errorf("read glossary: %w", err)
 	}
-	return parseGlossary(raw), nil
+	return ParseGlossary(raw), nil
 }
 
 func (fs *Filesystem) SaveGlossary(_ context.Context, _ RepoID, g Glossary) error {
@@ -210,11 +210,12 @@ func numberFromName(name string) int {
 
 // --- glossary format ---
 
-// parseGlossary reads the format produced by serializeGlossary: optional
+// ParseGlossary reads the format produced by Glossary.Markdown: optional
 // `# Glossary` header, then one `## term` section per term. Body lines
 // continue until the next `## ` or a `Synonyms:` line; the latter is
-// always the trailing element of a section.
-func parseGlossary(raw []byte) Glossary {
+// always the trailing element of a section. Exported for callers (e.g.,
+// eval) that have glossary bytes from a non-Filesystem source.
+func ParseGlossary(raw []byte) Glossary {
 	var g Glossary
 	sc := bufio.NewScanner(bytes.NewReader(raw))
 	sc.Buffer(make([]byte, 64*1024), 1024*1024)

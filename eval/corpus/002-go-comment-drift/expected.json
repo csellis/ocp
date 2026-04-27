@@ -1,0 +1,5 @@
+{
+  "hits": [
+    {"file": "handler.go", "line": 3, "synonym": "issue", "canonical": "observation"}
+  ]
+}
