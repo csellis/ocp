@@ -41,6 +41,14 @@ Present:
   - `git.go` — `gitTrackedFiles(ctx, root)`. Two short subprocess calls (`git rev-parse`, `git ls-files --cached --others --exclude-standard`) to get the set of paths git considers in-repo. Returns `errNotGitRepo` outside a working tree; caller falls back to walking.
   - `scout_test.go` — detection tests covering matching, multi-word synonyms, word-boundary correctness, dir/extension exclusions, context cancellation, gitignore respect, and the `.ocp/` always-exclude rule.
 
+- `internal/voice/` — observation formatting in OCP voice.
+  - `voice.go` — `Format(Body) string` produces the observation markdown. Pure: no I/O, no random, no time. Caller passes the Oblique card and ship-name explicitly.
+  - `oblique.go` — `ObliquePack` (curated Eno cards) plus `PickCard()` for random selection per observation.
+  - `voice_test.go`, `oblique_test.go` — body-shape and pack-membership coverage.
+
+- `internal/names/` — Banks-style ship-name pack.
+  - `names.go` — `Pack` and `Default()`. v0.1 hardcodes the dogfood instance to `Pack[0]`; future slices add per-repo persistence via `.ocp/config.toml` and seed-based selection.
+
 - `eval/` — eval harness and labeled corpus.
   - `main.go` — `package main` runner. Walks `corpus/`, runs `scout.Detect` on each example's `testdata/`, computes precision/recall against `expected.json`, prints a markdown report.
   - `corpus/<NNN-slug>/{testdata/, glossary.md, expected.json}` — one directory per example.
@@ -48,12 +56,10 @@ Present:
 
 Planned, not yet present (see `docs/PLAN.md` for the build order):
 
-- `internal/agent/` — pi-style stateful agent primitives.
-- `internal/cognition/` — LLM seam; `vertex/` subpackage wraps Gemini (default model: 2.5 Flash).
-- `internal/tools/` — agent tools: `parse_diff`, `read_glossary`, `find_term_uses`, `github_issues`, etc.
+- `internal/agent/` — pi-style stateful agent primitives. Deferred to v0.2 alongside cognition.
+- `internal/cognition/` — LLM seam; `vertex/` subpackage wraps Gemini (default model: 2.5 Flash). Deferred to v0.2.
+- `internal/tools/` — agent tools: `parse_diff`, `read_glossary`, `find_term_uses`, `github_issues`, etc. Deferred to v0.2.
 - `internal/triggers/` — invocation surfaces: `cli`, `webhook` (v0.2), `scheduler` (v0.2).
-- `internal/voice/` — observation formatting plus the Oblique Strategies card pack.
-- `internal/names/` — Banks-style ship-name pack.
 
 ## Where to look for things by topic
 
@@ -70,6 +76,9 @@ Planned, not yet present (see `docs/PLAN.md` for the build order):
 | Tune the seed glossary OCP writes on first run | `cmd/ocp/main.go` (`seedGlossary`) |
 | Add a new ocp subcommand | `cmd/ocp/main.go` (declare `*cobra.Command`, register in `init`) |
 | Change how drift candidates become observations | `cmd/ocp/main.go` (`groupHits`, `candidateBody`) |
+| Change the OCP voice template | `internal/voice/voice.go` (`Format`) |
+| Add or change Oblique cards | `internal/voice/oblique.go` (`ObliquePack`) |
+| Add or change ship-names | `internal/names/names.go` (`Pack`) |
 | Add or change an eval corpus example | `eval/corpus/<NNN-slug>/`; see `eval/README.md` |
 | Change the eval runner or report format | `eval/main.go` |
 | Change observation filename slug rules | `cmd/ocp/main.go` (`slugify`, `slugFromPath`) |

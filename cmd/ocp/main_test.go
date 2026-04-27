@@ -174,7 +174,15 @@ func TestRunDrift_FilesObservations(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := string(content)
-	for _, want := range []string{"Status: open", "canonicalizes this concept as `glossary`", "docs/a.md", "docs/b.md", "2 files (2 occurrences)"} {
+	for _, want := range []string{
+		"Status: open",
+		"Hello.",
+		"canonicalizes this concept as `glossary`",
+		"docs/a.md",
+		"docs/b.md",
+		"2 files (2 occurrences)",
+		"— *Drone Honor Thy Error As A Hidden Intention*",
+	} {
 		if !strings.Contains(s, want) {
 			t.Errorf("missing %q in %s:\n%s", want, vocabFile, s)
 		}

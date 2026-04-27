@@ -31,6 +31,51 @@ OCP is a missing piece: the continuous version. One way to operationalize "inves
 4. Reads replies on its own observations (issue comments in remote mode, edits to the conversation file locally). Updates the glossary, asks for clarification, or stands by the observation, then closes.
 5. Runs on its own repo from day one. The first observation in `.ocp/log.md` is OCP noticing OCP.
 
+## Install
+
+Requires Go 1.25 or newer.
+
+```
+go install github.com/csellis/ocp/cmd/ocp@latest
+```
+
+Or build from source:
+
+```
+git clone https://github.com/csellis/ocp.git
+cd ocp
+make bin/ocp
+```
+
+The binary lands at `bin/ocp`. Put it on your `PATH` or invoke directly.
+
+## Usage
+
+Run from inside the repo you want OCP to watch. Today's local-CLI surface is two subcommands.
+
+`ocp scan` reads or seeds `.ocp/glossary.md` and prints the current glossary:
+
+```
+$ ocp scan
+wrote new glossary at /your/repo/.ocp/glossary.md (7 terms)
+
+# Glossary
+
+## OCP
+...
+```
+
+On subsequent runs it reports the term count and prints the existing glossary unchanged.
+
+`ocp drift` walks the working tree for occurrences of glossary synonyms and files one observation per `(synonym, canonical)` pair under `.ocp/conversation/`:
+
+```
+$ ocp drift
+2 candidates: 2 new (filed), 0 existing
+```
+
+The run is idempotent: re-running with no code changes files no new observations. The remaining `respond` and `serve` subcommands described in the roadmap (see `docs/PLAN.md`) are not yet wired.
+
 ## Architecture (compressed)
 
 A single Go binary. Pi-mono-style stateful agent primitives ported to Go. Vertex AI (Gemini) as cognition. Two modes share the same binary:

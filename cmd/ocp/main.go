@@ -19,11 +19,20 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/csellis/ocp/internal/names"
 	"github.com/csellis/ocp/internal/scout"
 	"github.com/csellis/ocp/internal/storage"
+	"github.com/csellis/ocp/internal/voice"
 )
 
-const version = "0.1.0-dev"
+// Build-time metadata. Overridden via -ldflags "-X main.version=..." by
+// the release pipeline (.goreleaser.yaml). Defaults are what `go install`
+// from a working tree produces.
+var (
+	version = "0.1.0-dev"
+	commit  = "unknown"
+	date    = "unknown"
+)
 
 var rootCmd = &cobra.Command{
 	Use:   "ocp",
@@ -35,7 +44,7 @@ its own .ocp/ state. The blast radius is bounded by design.
 
 For the thesis and architecture, see docs/THESIS.md and docs/ARCHITECTURE.md.
 For the build roadmap, see docs/PLAN.md.`,
-	Version:       version,
+	Version:       fmt.Sprintf("%s (commit %s, built %s)", version, commit, date),
 	SilenceUsage:  true,
 	SilenceErrors: true,
 }
@@ -317,27 +326,17 @@ func groupHits(hits []scout.Hit) []candidate {
 }
 
 func candidateBody(c candidate) string {
-	var b strings.Builder
-	totalLines := 0
-	for _, f := range c.Files {
-		totalLines += len(f.Lines)
+	files := make([]voice.FileCitation, len(c.Files))
+	for i, f := range c.Files {
+		files[i] = voice.FileCitation{File: f.File, Lines: f.Lines}
 	}
-	fmt.Fprintf(&b, "Synonym `%s` appeared in %d %s (%d %s). The glossary canonicalizes this concept as `%s`.\n\n",
-		c.Synonym, len(c.Files), pluralize("file", len(c.Files)),
-		totalLines, pluralize("occurrence", totalLines), c.Canonical)
-	b.WriteString("Citations:\n")
-	for _, f := range c.Files {
-		fmt.Fprintf(&b, "- %s:", f.File)
-		for i, ln := range f.Lines {
-			if i == 0 {
-				fmt.Fprintf(&b, " %d", ln)
-			} else {
-				fmt.Fprintf(&b, ", %d", ln)
-			}
-		}
-		b.WriteByte('\n')
-	}
-	return b.String()
+	return voice.Format(voice.Body{
+		Synonym:   c.Synonym,
+		Canonical: c.Canonical,
+		Files:     files,
+		Card:      voice.PickCard(),
+		ShipName:  names.Default(),
+	})
 }
 
 // slugify returns a filesystem-safe lowercase slug. Non-alphanumeric
