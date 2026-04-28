@@ -24,16 +24,24 @@ OCP is a missing piece: the continuous version. One way to operationalize "inves
 > Invest in the design of the system every day.
 > — Kent Beck
 
-## What it does (v0.1)
+## What it does today
 
-1. Looks for the team's ubiquitous language file (the glossary) in the repo. If none exists, generates one from the codebase on first run and writes `.ocp/glossary.md`. You edit it. Future runs respect your edits.
-2. Watches for drift in three flavors:
-   - **Synonymy**: multiple words for one concept
-   - **Ambiguity**: one word for multiple concepts
-   - **Vagueness**: overloaded or imprecise terms
-3. Surfaces each drift event as a single observation. In remote mode this is a GitHub Issue. In local CLI mode it is an entry in `.ocp/conversation/`. Each carries citations from the diff and optionally a curated Oblique Strategy card.
-4. Reads replies on its own observations (issue comments in remote mode, edits to the conversation file locally). Updates the glossary, asks for clarification, or stands by the observation, then closes.
-5. Runs on its own repo from day one. The first observation in `.ocp/log.md` is OCP noticing OCP.
+OCP runs as a local CLI against a repo on disk. Three subcommands, one loop:
+
+1. **`ocp scan`** finds the team's ubiquitous language file. If `.ocp/glossary.md` is missing, it seeds one from the project's own canonical vocabulary. If present, it reads it and prints. You edit; future runs respect your edits.
+2. **`ocp drift`** walks the working tree (git-aware: respects `.gitignore`) for occurrences of words listed as synonyms in the glossary. Each `(synonym, canonical)` pair is filed as one observation under `.ocp/conversation/`, with file and line citations. Idempotent: re-running with no new drift files no new observations.
+3. **`ocp respond`** reads `## Reply` sections appended to open observations and acts on `close: <reason>`, `synonym: <term>`, or `stand by`. Closes move to `.ocp/conversation/closed/`; synonym additions land in the glossary; the log records the transition.
+
+OCP runs on its own repo from day one. The first observation in `.ocp/log.md` is OCP noticing OCP.
+
+## What it does not do yet
+
+The roadmap is in `docs/PLAN.md`. The honest gaps in v0.1-dev:
+
+- **No LLM yet.** `respond` is a keyword parser, not a judgment call. Wiring Vertex / Gemini for the conversation loop is the v0.2 work.
+- **Synonymy only.** The other two drift modes (ambiguity, one word for many concepts; vagueness, overloaded or imprecise terms) ship with v0.3.
+- **Local mode only.** Remote mode against a GitHub repo (issues for observations, comments for replies, PRs for glossary edits, Firestore for cross-repo state) ships with v0.2.
+- **No Oblique Strategy cards in observations yet.** The card pack exists; the integration into observation bodies waits until the LLM-driven respond lands.
 
 ## Install
 
@@ -55,7 +63,7 @@ The binary lands at `bin/ocp`. Put it on your `PATH` or invoke directly.
 
 ## Usage
 
-Run from inside the repo you want OCP to watch. Today's local-CLI surface is two subcommands.
+Run from inside the repo you want OCP to watch.
 
 `ocp scan` reads or seeds `.ocp/glossary.md` and prints the current glossary:
 
@@ -78,14 +86,23 @@ $ ocp drift
 2 candidates: 2 new (filed), 0 existing
 ```
 
-The run is idempotent: re-running with no code changes files no new observations. The remaining `respond` and `serve` subcommands described in the roadmap (see `docs/PLAN.md`) are not yet wired.
+`ocp respond` reads any `## Reply` block you appended to an open observation and acts on it:
+
+```
+$ ocp respond
+1 reply: 1 closed, 0 glossary updates, 0 stand-by
+```
+
+Recognized reply intents: `close: <reason>`, `synonym: <term>` (adds the synonym to the canonical and closes), and `stand by` (closes without changes). Anything else is left open for the next pass.
+
+All three subcommands are one-shot and idempotent. The `serve` subcommand (hosted, GitHub-mode) ships with v0.2; see `docs/PLAN.md`.
 
 ## Architecture (compressed)
 
-A single Go binary. Pi-mono-style stateful agent primitives ported to Go. Vertex AI (Gemini) as cognition. Two modes share the same binary:
+A single Go binary. The codebase is structured around two seams: cognition (the LLM, planned) and storage (filesystem today, Firestore in v0.2). Two modes will share the same binary:
 
-- **Local CLI**: run from your terminal against a repo on disk. The agent reads the working tree, looks for the ubiquitous language file, and writes everything (glossary, log, conversation) into `.ocp/` as plain files. No GitHub required, no network beyond the model call.
-- **Remote**: deployed as a service against a GitHub repo. The agent uses GitHub for the conversation: issues for observations, comments for replies, PRs for glossary edits. State that does not belong in the repo (cross-repo memory, schedule cursors) lives in Firestore.
+- **Local CLI** (today): run from your terminal against a repo on disk. The binary reads the working tree, looks for the ubiquitous language file, and writes everything (glossary, log, conversation) into `.ocp/` as plain files. No network. The cognition seam exists but is currently filled by a keyword parser; Vertex / Gemini wiring lands in v0.2.
+- **Remote** (v0.2): deployed as a service against a GitHub repo. The agent uses GitHub for the conversation: issues for observations, comments for replies, PRs for glossary edits. Cross-repo state (memory, schedule cursors) lives in Firestore.
 
 See `docs/ARCHITECTURE.md` for detail and `docs/PLAN.md` for the v0.1 to v0.5 roadmap.
 
