@@ -18,49 +18,21 @@ Maintainer scratchpad. Not a roadmap. For the roadmap, see `docs/PLAN.md`.
 
 ## v0.1.x cleanup
 
-### NEXT — bubbletea migration for the interactive surface
+- [x] Migrated the home menu and `ocp respond` TUI from line-buffered
+      `bufio.Reader` + `fmt.Fprintln` to `bubbletea` (with `lipgloss`
+      and `bubbles/textinput`). ESC works at the menu and inside every
+      sub-prompt. Arrow keys + letter shortcuts at home; real line
+      editing in close-reason and synonym prompts. Stylist (color.go)
+      deleted; both Models share lipgloss-backed styles. File-Reply
+      path (`--from-file`) untouched. Tests rewritten to drive Models
+      directly via `Update(tea.KeyMsg)` rather than scripted bufio.
 
-- [ ] **DO THIS FIRST.** Migrate the home menu and `ocp respond` TUI
-      from line-buffered `bufio.Reader` + `fmt.Fprintln` to a real TUI
-      library: `github.com/charmbracelet/bubbletea`.
-
-      Why: line-buffered terminal mode means bare ESC is invisible to
-      the program (the byte sits in the kernel buffer, no read fires
-      until Enter). Workarounds (empty-enter cancel, raw-mode-only-at-
-      menu) all hit the same wall — sub-prompts where you type a reason
-      or term still don't get ESC. Real ESC requires raw mode; raw mode
-      breaks line editing unless you re-implement it; bubbletea has
-      already done that work.
-
-      Wins beyond ESC:
-      - Real navigation (arrow keys, ESC, ctrl-c) at every prompt
-      - Redraw on every keystroke; legend / status updates in place
-      - Scroll regions for [d]etails (no more bottom-of-screen vomit)
-      - Cleaner separation of model / view / update (Elm-architecture)
-      - Foundation for v0.2 polish (multi-pane, live status during
-        long drift runs, etc.)
-
-      Migration scope:
-      - Home (status block + action menu) becomes a bubbletea Model
-      - Respond (legend + per-observation walk + sub-prompts) is a
-        second Model that runs as a child program
-      - File-Reply path (`--from-file`) stays untouched; bubbletea
-        only owns the interactive front-end
-      - Tests: bubbletea has a `tea.NewProgram(...).Run()` test mode
-        with scripted input. Existing TUI unit tests rewrite to drive
-        the Model directly (Init/Update with simulated tea.Msg values),
-        which is cleaner than current bufio scripting.
-      - Dep: bubbletea + lipgloss (styling) + bubbles (input field).
-        Reasonable for a TUI app; biggest dep we have aside from cobra.
-
-      Estimate: ~5 sprint points. Half a day to spike the home Model;
-      half a day to migrate respond; rest is polish + test rewrite.
-
-      Reference: https://github.com/charmbracelet/bubbletea
-
-- [ ] (Old, superseded by NEXT above): TUI for `ocp respond`. Today's
-      bufio-based TUI shipped in slice 9 but ESC doesn't work in
-      line-buffered mode. Bubbletea migration replaces it.
+      Deferred polish (separate slices later):
+      - Scroll region for `[d]etails` so long bodies don't push the
+        prompt off-screen.
+      - Live status during long `ocp drift` runs (currently silent
+        until done).
+      - Multi-pane home (status left, log preview right).
 
 - [ ] Re-running `ocp drift` after scout changes does not refresh
       existing observation files (dedupe-by-slug skips them). The only

@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"errors"
@@ -10,14 +9,12 @@ import (
 	"strings"
 	"testing"
 
+	tea "github.com/charmbracelet/bubbletea"
+
 	"github.com/csellis/ocp/internal/storage"
 )
 
-func TestTUIPrompt_Close(t *testing.T) {
-	in := bufio.NewReader(strings.NewReader("c\npedagogical use, not drift\n"))
-	var out bytes.Buffer
-	prompt := makeTUIPrompt(in, &out, false)
-
+func TestRespondModel_Close(t *testing.T) {
 	state := storage.IssueState{
 		Ref:          storage.IssueRef{Path: "0001-vocabulary-glossary.md"},
 		Term:         "vocabulary",
@@ -27,101 +24,86 @@ func TestTUIPrompt_Close(t *testing.T) {
 		LastReviewed: fixedNow,
 		Body:         "# vocabulary -> glossary\n\nUsed in 4 files (47 occurrences):\n\n- doc.md: 1\n",
 	}
-	action, err := prompt(state)
-	if err != nil {
-		t.Fatalf("prompt: %v", err)
+	m := drive(newRespondModel(state, false), rune2key('c'))
+	if m.mode != modeReasonInput {
+		t.Fatalf("expected modeReasonInput after 'c', got %v", m.mode)
 	}
-	if action.kind != replyClose || action.value != "pedagogical use, not drift" {
-		t.Errorf("got %+v", action)
+	m = typeText(m, "pedagogical use, not drift")
+	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	got, err := extractAction(next.(respondModel))
+	if err != nil || got.kind != replyClose || got.value != "pedagogical use, not drift" {
+		t.Errorf("extractAction: got (%+v, %v)", got, err)
 	}
+	if cmd == nil {
+		t.Errorf("expected tea.Quit cmd after submitting reason")
+	}
+	m = next.(respondModel)
 
-	rendered := out.String()
+	header := respondHeader(state, m.styles)
 	for _, want := range []string{
 		"0001-vocabulary-glossary.md",
-		"vocabulary -> glossary",
+		"vocabulary",
+		"glossary",
 		"4 files / 47 occurrences",
 		"reviewed 2026-04-26",
-		"[c]lose",
-		"[d]etails",
-		"reason (empty to cancel):",
-		"Actions:", // legend printed once at session start
 	} {
-		if !strings.Contains(rendered, want) {
-			t.Errorf("missing %q in TUI output:\n%s", want, rendered)
+		if !strings.Contains(header, want) {
+			t.Errorf("missing %q in header:\n%s", want, header)
 		}
 	}
 }
 
-func TestTUIPrompt_Synonym(t *testing.T) {
-	in := bufio.NewReader(strings.NewReader("s\nnew-term\n"))
-	var out bytes.Buffer
-	prompt := makeTUIPrompt(in, &out, false)
-
-	state := storage.IssueState{
-		Ref:       storage.IssueRef{Path: "0002-x.md"},
-		Term:      "x",
-		Canonical: "y",
+func TestRespondModel_Synonym(t *testing.T) {
+	state := storage.IssueState{Ref: storage.IssueRef{Path: "0002-x.md"}, Term: "x", Canonical: "y"}
+	m := drive(newRespondModel(state, false), rune2key('s'))
+	if m.mode != modeSynonymInput {
+		t.Fatalf("expected modeSynonymInput, got %v", m.mode)
 	}
-	action, err := prompt(state)
-	if err != nil {
-		t.Fatalf("prompt: %v", err)
-	}
-	if action.kind != replySynonym || action.value != "new-term" {
-		t.Errorf("got %+v", action)
+	m = typeText(m, "new-term")
+	m = drive(m, tea.KeyMsg{Type: tea.KeyEnter})
+	if m.action.kind != replySynonym || m.action.value != "new-term" {
+		t.Errorf("got %+v", m.action)
 	}
 }
 
-func TestTUIPrompt_Help(t *testing.T) {
-	// ? reprints the legend, then user picks stand-by.
-	in := bufio.NewReader(strings.NewReader("?\nb\n"))
-	var out bytes.Buffer
-	prompt := makeTUIPrompt(in, &out, false)
-	if _, err := prompt(storage.IssueState{Ref: storage.IssueRef{Path: "x.md"}}); err != nil {
-		t.Fatalf("prompt: %v", err)
+func TestRespondModel_HelpToggle(t *testing.T) {
+	m := newRespondModel(storage.IssueState{Ref: storage.IssueRef{Path: "x.md"}}, false)
+	if strings.Contains(m.View(), "Actions:") {
+		t.Errorf("legend should not appear inside the model until ?")
 	}
-	rendered := out.String()
-	// Legend prints once at session start AND once on ? — count "Actions:" headings.
-	if c := strings.Count(rendered, "Actions:"); c != 2 {
-		t.Errorf("expected 'Actions:' to appear twice (start + help), got %d:\n%s", c, rendered)
+	m = drive(m, rune2key('?'))
+	if !strings.Contains(m.View(), "Actions:") {
+		t.Errorf("expected Actions: header after ?:\n%s", m.View())
+	}
+	m = drive(m, rune2key('?'))
+	if strings.Contains(m.View(), "Actions:") {
+		t.Errorf("expected help hidden after second ?")
 	}
 }
 
-func TestTUIPrompt_Details(t *testing.T) {
-	// d shows the body inline, then re-prompts; user then closes.
-	in := bufio.NewReader(strings.NewReader("d\nc\nclose after details\n"))
-	var out bytes.Buffer
-	prompt := makeTUIPrompt(in, &out, false)
-
+func TestRespondModel_DetailsToggle(t *testing.T) {
 	state := storage.IssueState{
 		Ref:  storage.IssueRef{Path: "x.md"},
 		Term: "x", Canonical: "y",
 		Body: "# x -> y\n\nUsed in 2 files (3 occurrences):\n\n- a.md: 1, 2\n- b.md: 5\n",
 	}
-	action, err := prompt(state)
-	if err != nil {
-		t.Fatalf("prompt: %v", err)
-	}
-	if action.kind != replyClose || action.value != "close after details" {
-		t.Errorf("got %+v", action)
-	}
-	rendered := out.String()
+	m := drive(newRespondModel(state, false), rune2key('d'))
+	rendered := m.View()
 	for _, want := range []string{"# x -> y", "- a.md: 1, 2", "- b.md: 5"} {
 		if !strings.Contains(rendered, want) {
-			t.Errorf("expected body line %q in details output:\n%s", want, rendered)
+			t.Errorf("expected body line %q in details:\n%s", want, rendered)
 		}
+	}
+	// d again hides details.
+	m = drive(m, rune2key('d'))
+	if strings.Contains(m.View(), "- a.md: 1, 2") {
+		t.Errorf("expected details hidden after second d")
 	}
 }
 
-func TestTUIPrompt_HeaderFallbacks(t *testing.T) {
-	// State missing Term, Canonical, Files: header still renders gracefully.
-	in := bufio.NewReader(strings.NewReader("n\n"))
-	var out bytes.Buffer
-	prompt := makeTUIPrompt(in, &out, false)
-	_, err := prompt(storage.IssueState{Ref: storage.IssueRef{Path: "x.md"}})
-	if err != nil {
-		t.Fatalf("prompt: %v", err)
-	}
-	rendered := out.String()
+func TestRespondModel_HeaderFallbacks(t *testing.T) {
+	m := newRespondModel(storage.IssueState{Ref: storage.IssueRef{Path: "x.md"}}, false)
+	rendered := m.View()
 	for _, want := range []string{"(no term recorded)", "(no canonical recorded)"} {
 		if !strings.Contains(rendered, want) {
 			t.Errorf("missing fallback %q:\n%s", want, rendered)
@@ -129,85 +111,118 @@ func TestTUIPrompt_HeaderFallbacks(t *testing.T) {
 	}
 }
 
-func TestTUIPrompt_StandBy(t *testing.T) {
-	in := bufio.NewReader(strings.NewReader("b\n"))
-	prompt := makeTUIPrompt(in, &bytes.Buffer{}, false)
-	action, err := prompt(storage.IssueState{Ref: storage.IssueRef{Path: "x.md"}})
-	if err != nil {
-		t.Fatalf("prompt: %v", err)
+func TestRespondModel_StandBy(t *testing.T) {
+	m := newRespondModel(storage.IssueState{Ref: storage.IssueRef{Path: "x.md"}}, false)
+	next, cmd := m.Update(rune2key('b'))
+	got, err := extractAction(next.(respondModel))
+	if err != nil || got.kind != replyStandBy {
+		t.Errorf("extractAction: got (%+v, %v); want (replyStandBy, nil)", got, err)
 	}
-	if action.kind != replyStandBy {
-		t.Errorf("got %+v", action)
-	}
-}
-
-func TestTUIPrompt_Next(t *testing.T) {
-	in := bufio.NewReader(strings.NewReader("n\n"))
-	prompt := makeTUIPrompt(in, &bytes.Buffer{}, false)
-	action, err := prompt(storage.IssueState{Ref: storage.IssueRef{Path: "x.md"}})
-	if err != nil {
-		t.Fatalf("prompt: %v", err)
-	}
-	if action.kind != replyNone {
-		t.Errorf("got %+v", action)
+	if cmd == nil {
+		t.Errorf("expected tea.Quit cmd")
 	}
 }
 
-func TestTUIPrompt_Quit(t *testing.T) {
-	in := bufio.NewReader(strings.NewReader("q\n"))
-	prompt := makeTUIPrompt(in, &bytes.Buffer{}, false)
-	_, err := prompt(storage.IssueState{Ref: storage.IssueRef{Path: "x.md"}})
-	if !errors.Is(err, errQuit) {
-		t.Errorf("expected errQuit, got %v", err)
+func TestRespondModel_Next(t *testing.T) {
+	m := newRespondModel(storage.IssueState{Ref: storage.IssueRef{Path: "x.md"}}, false)
+	next, cmd := m.Update(rune2key('n'))
+	got, err := extractAction(next.(respondModel))
+	if err != nil || got.kind != replyNone {
+		t.Errorf("extractAction: got (%+v, %v); want (replyNone, nil)", got, err)
+	}
+	if cmd == nil {
+		t.Errorf("expected tea.Quit cmd on next")
 	}
 }
 
-func TestTUIPrompt_UnknownThenClose(t *testing.T) {
-	in := bufio.NewReader(strings.NewReader("zzz\nc\nfine\n"))
-	var out bytes.Buffer
-	prompt := makeTUIPrompt(in, &out, false)
-	action, err := prompt(storage.IssueState{Ref: storage.IssueRef{Path: "x.md"}})
-	if err != nil {
-		t.Fatalf("prompt: %v", err)
-	}
-	if action.kind != replyClose || action.value != "fine" {
-		t.Errorf("got %+v", action)
-	}
-	if !strings.Contains(out.String(), `unknown choice "zzz"`) {
-		t.Errorf("expected unknown-choice hint, got:\n%s", out.String())
-	}
-}
-
-func TestTUIPrompt_EmptyReasonCancels(t *testing.T) {
-	// Empty enter at the reason sub-prompt cancels back to the menu;
-	// user then picks stand-by instead. Nothing closes.
-	in := bufio.NewReader(strings.NewReader("c\n\nb\n"))
-	var out bytes.Buffer
-	prompt := makeTUIPrompt(in, &out, false)
-	action, err := prompt(storage.IssueState{Ref: storage.IssueRef{Path: "x.md"}})
-	if err != nil {
-		t.Fatalf("prompt: %v", err)
-	}
-	if action.kind != replyStandBy {
-		t.Errorf("expected replyStandBy after cancel, got %+v", action)
-	}
-	if !strings.Contains(out.String(), "(cancelled)") {
-		t.Errorf("expected '(cancelled)' marker, got:\n%s", out.String())
+func TestRespondModel_QuitFromMenu(t *testing.T) {
+	for _, key := range []tea.KeyMsg{
+		rune2key('q'),
+		{Type: tea.KeyEsc},
+		{Type: tea.KeyCtrlC},
+	} {
+		m := drive(newRespondModel(storage.IssueState{Ref: storage.IssueRef{Path: "x.md"}}, false), key)
+		if !m.quitting {
+			t.Errorf("expected quitting=true on %v", key)
+		}
+		if _, err := extractAction(m); !errors.Is(err, errQuit) {
+			t.Errorf("expected errQuit for %v, got %v", key, err)
+		}
 	}
 }
 
-func TestTUIPrompt_EOFMeansQuit(t *testing.T) {
-	in := bufio.NewReader(strings.NewReader(""))
-	prompt := makeTUIPrompt(in, &bytes.Buffer{}, false)
-	_, err := prompt(storage.IssueState{Ref: storage.IssueRef{Path: "x.md"}})
-	if !errors.Is(err, errQuit) {
-		t.Errorf("expected errQuit on EOF, got %v", err)
+func TestRespondModel_UnknownKeyShowsFlash(t *testing.T) {
+	m := drive(newRespondModel(storage.IssueState{Ref: storage.IssueRef{Path: "x.md"}}, false), rune2key('z'))
+	if !strings.Contains(m.View(), `unknown choice "z"`) {
+		t.Errorf("expected unknown-choice flash:\n%s", m.View())
+	}
+	// Next valid key clears the flash and acts normally.
+	m = drive(m, rune2key('b'))
+	if m.action.kind != replyStandBy {
+		t.Errorf("expected stand-by after recovering from unknown key, got %+v", m.action)
 	}
 }
 
-// End-to-end through runRespond: scripted TUI input drives close on
-// the only open observation. The file stays in conversation/ (status
-// changes via frontmatter only); LoadOpenIssues no longer returns it.
+func TestRespondModel_EmptyReasonCancels(t *testing.T) {
+	m := drive(newRespondModel(storage.IssueState{Ref: storage.IssueRef{Path: "x.md"}}, false), rune2key('c'))
+	if m.mode != modeReasonInput {
+		t.Fatalf("expected modeReasonInput")
+	}
+	// Empty enter cancels back to menu with a flash.
+	m = drive(m, tea.KeyMsg{Type: tea.KeyEnter})
+	if m.mode != modeMenu {
+		t.Errorf("expected back to modeMenu, got %v", m.mode)
+	}
+	if !strings.Contains(m.View(), "(cancelled)") {
+		t.Errorf("expected '(cancelled)' flash, got:\n%s", m.View())
+	}
+	// Stand-by from menu works after cancel.
+	m = drive(m, rune2key('b'))
+	if m.action.kind != replyStandBy {
+		t.Errorf("expected stand-by, got %+v", m.action)
+	}
+}
+
+func TestRespondModel_EscFromInputCancels(t *testing.T) {
+	m := drive(newRespondModel(storage.IssueState{Ref: storage.IssueRef{Path: "x.md"}}, false), rune2key('s'))
+	m = typeText(m, "partial")
+	m = drive(m, tea.KeyMsg{Type: tea.KeyEsc})
+	if m.mode != modeMenu {
+		t.Errorf("expected back to modeMenu after esc, got %v", m.mode)
+	}
+	if m.action.kind != replyNone {
+		t.Errorf("expected no action recorded, got %+v", m.action)
+	}
+}
+
+func TestRespondHeader_DimDensityOnZero(t *testing.T) {
+	// Files == 0 means the density block is omitted from the header.
+	header := respondHeader(storage.IssueState{Ref: storage.IssueRef{Path: "x.md"}, Term: "t", Canonical: "c"}, newHomeStyles(false))
+	if strings.Contains(header, "occurrence") {
+		t.Errorf("expected density omitted when Files == 0:\n%s", header)
+	}
+}
+
+// fakePromptScript drives runRespond without any TUI: it returns
+// queued actions, one per call. errors are returned verbatim.
+type fakePromptScript struct {
+	actions []replyAction
+	errs    []error
+	i       int
+}
+
+func (f *fakePromptScript) prompt(_ storage.IssueState) (replyAction, error) {
+	if f.i >= len(f.actions) {
+		return replyAction{}, errQuit
+	}
+	a, err := f.actions[f.i], f.errs[f.i]
+	f.i++
+	return a, err
+}
+
+// End-to-end through runRespond: a fake prompter returns close on the
+// only open observation. The file stays in conversation/ (status changes
+// via frontmatter only); LoadOpenIssues no longer returns it.
 func TestRunRespond_TUIClose(t *testing.T) {
 	root := t.TempDir()
 	ctx := context.Background()
@@ -219,16 +234,16 @@ func TestRunRespond_TUIClose(t *testing.T) {
 		t.Fatalf("drift: %v", err)
 	}
 
-	in := bufio.NewReader(strings.NewReader("c\npedagogical, not drift\n"))
+	script := &fakePromptScript{
+		actions: []replyAction{{kind: replyClose, value: "pedagogical, not drift"}},
+		errs:    []error{nil},
+	}
 	var out bytes.Buffer
-	prompt := makeTUIPrompt(in, &out, false)
-	if err := runRespond(ctx, &out, root, fixedNow, prompt); err != nil {
+	if err := runRespond(ctx, &out, root, fixedNow, script.prompt); err != nil {
 		t.Fatalf("runRespond: %v", err)
 	}
-
-	rendered := out.String()
-	if !strings.Contains(rendered, "1 closed") {
-		t.Errorf("expected '1 closed' in summary:\n%s", rendered)
+	if !strings.Contains(out.String(), "1 closed") {
+		t.Errorf("expected '1 closed' in summary:\n%s", out.String())
 	}
 
 	convDir := filepath.Join(root, ".ocp", "conversation")
@@ -243,49 +258,58 @@ func TestRunRespond_TUIClose(t *testing.T) {
 		}
 	}
 	if len(files) != 1 {
-		t.Fatalf("expected one observation file in conversation/, got %v", files)
+		t.Fatalf("expected one observation file, got %v", files)
 	}
-
 	body, err := os.ReadFile(filepath.Join(convDir, files[0]))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(string(body), "Status: closed") {
-		t.Errorf("expected Status: closed in frontmatter:\n%s", body)
+		t.Errorf("expected Status: closed:\n%s", body)
 	}
 	if !strings.Contains(string(body), "Closed reason: pedagogical, not drift") {
 		t.Errorf("expected closed reason in frontmatter:\n%s", body)
 	}
 }
 
-// Quit mid-queue: TUI handles the first observation, quits before the
-// second. Summary reflects only the first action.
+// Quit mid-queue: prompter returns close on first, errQuit on second.
+// Summary reflects only the first action.
 func TestRunRespond_TUIQuitMidway(t *testing.T) {
 	root := t.TempDir()
 	ctx := context.Background()
 	if err := runScan(ctx, &bytes.Buffer{}, root, fixedNow); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
-	// Two synonyms, two observations.
 	writeTestFile(t, root, "doc.md", "the team's vocabulary matters.\nthe ubiquitous language too.\n")
 	if err := runDrift(ctx, &bytes.Buffer{}, root, fixedNow); err != nil {
 		t.Fatalf("drift: %v", err)
 	}
-
-	// Close the first, quit before the second.
-	in := bufio.NewReader(strings.NewReader("c\nfirst\nq\n"))
+	script := &fakePromptScript{
+		actions: []replyAction{{kind: replyClose, value: "first"}, {}},
+		errs:    []error{nil, errQuit},
+	}
 	var out bytes.Buffer
-	prompt := makeTUIPrompt(in, &out, false)
-	if err := runRespond(ctx, &out, root, fixedNow, prompt); err != nil {
+	if err := runRespond(ctx, &out, root, fixedNow, script.prompt); err != nil {
 		t.Fatalf("runRespond: %v", err)
 	}
-	rendered := out.String()
-	if !strings.Contains(rendered, "1 closed") {
-		t.Errorf("expected '1 closed' (only first observation handled):\n%s", rendered)
+	if !strings.Contains(out.String(), "2 open, 1 closed, 0 glossary updates, 0 skipped") {
+		t.Errorf("unexpected summary:\n%s", out.String())
 	}
-	// Summary shows 2 open total, but only 1 closed and 0 skipped because
-	// we quit before considering the second.
-	if !strings.Contains(rendered, "2 open, 1 closed, 0 glossary updates, 0 skipped") {
-		t.Errorf("unexpected summary:\n%s", rendered)
+}
+
+// drive runs Update with a single message and panics on cmd execution
+// (we only care about state transitions and View output, not the
+// async cmd plumbing). Returns the new model in concrete type.
+func drive(m respondModel, msg tea.Msg) respondModel {
+	next, _ := m.Update(msg)
+	return next.(respondModel)
+}
+
+// typeText feeds a string into the focused textinput one rune at a time.
+// Mirrors what bubbletea would deliver from a real keystroke stream.
+func typeText(m respondModel, s string) respondModel {
+	for _, r := range s {
+		m = drive(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
 	}
+	return m
 }

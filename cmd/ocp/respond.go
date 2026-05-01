@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bufio"
 	"context"
 	"errors"
 	"fmt"
@@ -70,7 +69,7 @@ func pickPrompt(out, errOut io.Writer) prompter {
 		return filePrompt
 	}
 	if isTerminal(os.Stdin) {
-		return makeTUIPrompt(bufio.NewReader(os.Stdin), out, isTerminal(os.Stdout))
+		return makeTUIPrompt(os.Stdin, out, isTerminal(os.Stdout))
 	}
 	fmt.Fprintln(errOut, "respond: stdin is not a terminal, falling back to file-Reply mode")
 	return filePrompt
