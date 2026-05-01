@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-05-01
+
+The first cut. Local CLI for ubiquitous-language drift detection. All six v0.1 ship gates met.
+
 ### Added
 - `ocp scan` reads or seeds `.ocp/glossary.md`.
 - `ocp drift` walks the working tree and files one observation per `(synonym, canonical)` pair under `.ocp/conversation/`.
@@ -19,4 +23,5 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Build-time version metadata threaded through `cobra` `--version` via `-ldflags`.
 - `CONTRIBUTING.md`, `SECURITY.md`, issue and PR templates.
 
-[Unreleased]: https://github.com/csellis/ocp/compare/HEAD
+[Unreleased]: https://github.com/csellis/ocp/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/csellis/ocp/releases/tag/v0.1.0
