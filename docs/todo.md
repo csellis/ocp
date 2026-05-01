@@ -34,6 +34,12 @@ Maintainer scratchpad. Not a roadmap. For the roadmap, see `docs/PLAN.md`.
         until done).
       - Multi-pane home (status left, log preview right).
 
+- [x] `ocp drift` crashed when the git index referenced files removed
+      from disk (e.g., a `rm` not yet `git add`-ed): scout opened the
+      missing path and surfaced ENOENT. `internal/scout/scout.go`
+      now treats `fs.ErrNotExist` in `scanList` as a silent skip,
+      with a regression test (`TestDetect_TrackedButDeletedSkippedSilently`).
+
 - [ ] Re-running `ocp drift` after scout changes does not refresh
       existing observation files (dedupe-by-slug skips them). The only
       way to regenerate is `rm -rf .ocp/conversation/`. Either add

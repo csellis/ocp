@@ -11,6 +11,7 @@ package scout
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -51,6 +52,11 @@ func Detect(ctx context.Context, root string, g storage.Glossary) ([]Hit, error)
 }
 
 // scanList scans an explicit set of paths (the git-aware path).
+//
+// `git ls-files --cached` includes files still in the index but already
+// removed from disk (e.g., a `rm` not yet `git add`-ed). Treat that
+// case as a silent skip: the user is mid-edit, the file is gone,
+// there is nothing to scan.
 func scanList(ctx context.Context, root string, files []string, entries []synEntry) ([]Hit, error) {
 	var hits []Hit
 	for _, rel := range files {
@@ -62,6 +68,9 @@ func scanList(ctx context.Context, root string, files []string, entries []synEnt
 		}
 		fileHits, err := scanFile(filepath.Join(root, rel), rel, entries)
 		if err != nil {
+			if errors.Is(err, fs.ErrNotExist) {
+				continue
+			}
 			return nil, err
 		}
 		hits = append(hits, fileHits...)

@@ -238,6 +238,42 @@ func TestDetect_DotOcpAlwaysExcluded(t *testing.T) {
 	}
 }
 
+func TestDetect_TrackedButDeletedSkippedSilently(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+	root := t.TempDir()
+	runGit(t, root, "init", "-q")
+	writeFile(t, root, "kept.md", "vocabulary stays.\n")
+	writeFile(t, root, "doomed.md", "vocabulary about to vanish.\n")
+	runGit(t, root, "add", ".")
+	runGit(t, root, "commit", "-q", "-m", "init")
+
+	// Remove from disk but leave in the index. `git ls-files --cached`
+	// will still list doomed.md; scout must not error on the missing read.
+	if err := os.Remove(filepath.Join(root, "doomed.md")); err != nil {
+		t.Fatal(err)
+	}
+
+	g := storage.Glossary{Terms: []storage.Term{
+		{Canonical: "glossary", Synonyms: []string{"vocabulary"}},
+	}}
+	hits, err := Detect(context.Background(), root, g)
+	if err != nil {
+		t.Fatalf("Detect: %v", err)
+	}
+	files := map[string]bool{}
+	for _, h := range hits {
+		files[h.File] = true
+	}
+	if !files["kept.md"] {
+		t.Errorf("expected kept.md in hits, got %v", files)
+	}
+	if files["doomed.md"] {
+		t.Errorf("doomed.md was deleted from disk; expected silent skip, got %v", files)
+	}
+}
+
 // runGit runs a git command in dir with deterministic author/committer
 // env so tests do not depend on the user's git config.
 func runGit(t *testing.T, dir string, args ...string) {
