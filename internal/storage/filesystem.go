@@ -34,7 +34,6 @@ func (fs *Filesystem) ocpDir() string          { return filepath.Join(fs.root, "
 func (fs *Filesystem) glossaryPath() string    { return filepath.Join(fs.ocpDir(), "glossary.md") }
 func (fs *Filesystem) logPath() string         { return filepath.Join(fs.ocpDir(), "log.md") }
 func (fs *Filesystem) conversationDir() string { return filepath.Join(fs.ocpDir(), "conversation") }
-func (fs *Filesystem) closedDir() string       { return filepath.Join(fs.conversationDir(), "closed") }
 
 func (fs *Filesystem) LoadGlossary(_ context.Context, _ RepoID) (Glossary, error) {
 	raw, err := os.ReadFile(fs.glossaryPath())
@@ -75,7 +74,45 @@ func (fs *Filesystem) AppendLog(_ context.Context, _ RepoID, entry LogEntry) err
 	return atomicWrite(fs.logPath(), buf.Bytes())
 }
 
+// LoadOpenIssues returns refs for observations whose Status frontmatter
+// is open. Closed observations live in the same directory; status is a
+// frontmatter field, not a filesystem location.
 func (fs *Filesystem) LoadOpenIssues(_ context.Context, _ RepoID) ([]IssueRef, error) {
+	entries, err := os.ReadDir(fs.conversationDir())
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("read conversation dir: %w", err)
+	}
+	var refs []IssueRef
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".md") {
+			continue
+		}
+		path := filepath.Join(fs.conversationDir(), e.Name())
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			return nil, fmt.Errorf("read %s: %w", path, err)
+		}
+		state, err := parseObservation(raw)
+		if err != nil {
+			return nil, fmt.Errorf("parse %s: %w", path, err)
+		}
+		if state.Status != IssueOpen {
+			continue
+		}
+		refs = append(refs, IssueRef{
+			Number: numberFromName(e.Name()),
+			Path:   e.Name(),
+		})
+	}
+	return refs, nil
+}
+
+// AllIssueRefs returns refs for every observation, regardless of status.
+// Used by drift to compute next observation number and dedupe by slug.
+func (fs *Filesystem) AllIssueRefs(_ context.Context, _ RepoID) ([]IssueRef, error) {
 	entries, err := os.ReadDir(fs.conversationDir())
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -96,90 +133,40 @@ func (fs *Filesystem) LoadOpenIssues(_ context.Context, _ RepoID) ([]IssueRef, e
 	return refs, nil
 }
 
-// AllIssueRefs returns refs for every observation, open or closed. The
-// returned IssueRefs carry the file basename in Path; callers cannot
-// distinguish open from closed from the ref alone (both directories
-// share a single basename namespace by design).
-func (fs *Filesystem) AllIssueRefs(_ context.Context, _ RepoID) ([]IssueRef, error) {
-	seen := map[string]bool{}
-	var refs []IssueRef
-	for _, dir := range []string{fs.conversationDir(), fs.closedDir()} {
-		entries, err := os.ReadDir(dir)
-		if err != nil {
-			if errors.Is(err, os.ErrNotExist) {
-				continue
-			}
-			return nil, fmt.Errorf("read %s: %w", dir, err)
-		}
-		for _, e := range entries {
-			if e.IsDir() || !strings.HasSuffix(e.Name(), ".md") {
-				continue
-			}
-			if seen[e.Name()] {
-				continue
-			}
-			seen[e.Name()] = true
-			refs = append(refs, IssueRef{
-				Number: numberFromName(e.Name()),
-				Path:   e.Name(),
-			})
-		}
-	}
-	return refs, nil
-}
-
-// LoadIssue reads one observation file and returns its full state. The
-// ref.Path basename is looked up in conversation/ first, then in
-// conversation/closed/. Returns ErrNotFound if no file matches.
+// LoadIssue reads one observation file and returns its full state.
+// Returns ErrNotFound if the file does not exist.
 func (fs *Filesystem) LoadIssue(_ context.Context, _ RepoID, ref IssueRef) (IssueState, error) {
-	for _, dir := range []string{fs.conversationDir(), fs.closedDir()} {
-		path := filepath.Join(dir, ref.Path)
-		raw, err := os.ReadFile(path)
-		if err != nil {
-			if errors.Is(err, os.ErrNotExist) {
-				continue
-			}
-			return IssueState{}, fmt.Errorf("read %s: %w", path, err)
+	path := filepath.Join(fs.conversationDir(), ref.Path)
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return IssueState{}, ErrNotFound
 		}
-		state, err := parseObservation(raw)
-		if err != nil {
-			return IssueState{}, fmt.Errorf("parse %s: %w", path, err)
-		}
-		state.Ref = ref
-		return state, nil
+		return IssueState{}, fmt.Errorf("read %s: %w", path, err)
 	}
-	return IssueState{}, ErrNotFound
+	state, err := parseObservation(raw)
+	if err != nil {
+		return IssueState{}, fmt.Errorf("parse %s: %w", path, err)
+	}
+	state.Ref = ref
+	return state, nil
 }
 
+// RecordIssueState writes the observation in place. Closed observations
+// stay in the same path as when they were open; only the Status (and
+// possibly ClosedReason) frontmatter fields change.
 func (fs *Filesystem) RecordIssueState(_ context.Context, _ RepoID, state IssueState) error {
 	if state.Ref.Path == "" {
 		return errors.New("RecordIssueState: empty Ref.Path")
 	}
-	var dir string
-	switch state.Status {
-	case IssueOpen:
-		dir = fs.conversationDir()
-	case IssueClosed:
-		dir = fs.closedDir()
-	default:
+	if state.Status != IssueOpen && state.Status != IssueClosed {
 		return fmt.Errorf("RecordIssueState: unknown status %d", state.Status)
 	}
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return fmt.Errorf("mkdir %s: %w", dir, err)
+	if err := os.MkdirAll(fs.conversationDir(), 0o755); err != nil {
+		return fmt.Errorf("mkdir %s: %w", fs.conversationDir(), err)
 	}
-	target := filepath.Join(dir, state.Ref.Path)
-	if err := atomicWrite(target, serializeObservation(state)); err != nil {
-		return err
-	}
-	if state.Status == IssueClosed {
-		old := filepath.Join(fs.conversationDir(), state.Ref.Path)
-		if old != target {
-			if err := os.Remove(old); err != nil && !errors.Is(err, os.ErrNotExist) {
-				return fmt.Errorf("remove open copy: %w", err)
-			}
-		}
-	}
-	return nil
+	target := filepath.Join(fs.conversationDir(), state.Ref.Path)
+	return atomicWrite(target, serializeObservation(state))
 }
 
 // projectFileMode is the mode for every file atomicWrite produces. 0o644
@@ -300,12 +287,26 @@ func serializeObservation(s IssueState) []byte {
 	b.WriteString("---\n")
 	fmt.Fprintf(&b, "Number: %d\n", s.Ref.Number)
 	fmt.Fprintf(&b, "Status: %s\n", statusString(s.Status))
-	fmt.Fprintf(&b, "Updated: %s\n", s.Updated.UTC().Format(time.RFC3339))
+	if s.Term != "" {
+		fmt.Fprintf(&b, "Term: %s\n", s.Term)
+	}
 	if s.Canonical != "" {
 		fmt.Fprintf(&b, "Canonical: %s\n", s.Canonical)
 	}
-	if s.Synonym != "" {
-		fmt.Fprintf(&b, "Synonym: %s\n", s.Synonym)
+	if s.Files > 0 {
+		fmt.Fprintf(&b, "Files: %d\n", s.Files)
+	}
+	if s.Occurrences > 0 {
+		fmt.Fprintf(&b, "Occurrences: %d\n", s.Occurrences)
+	}
+	if !s.FirstSeen.IsZero() {
+		fmt.Fprintf(&b, "First seen: %s\n", s.FirstSeen.UTC().Format(time.RFC3339))
+	}
+	if !s.LastReviewed.IsZero() {
+		fmt.Fprintf(&b, "Last reviewed: %s\n", s.LastReviewed.UTC().Format(time.RFC3339))
+	}
+	if s.ClosedReason != "" {
+		fmt.Fprintf(&b, "Closed reason: %s\n", s.ClosedReason)
 	}
 	b.WriteString("---\n\n")
 	b.WriteString(strings.TrimRight(s.Body, "\n"))
@@ -314,9 +315,8 @@ func serializeObservation(s IssueState) []byte {
 }
 
 // parseObservation is the inverse of serializeObservation. Tolerates
-// missing optional fields (Canonical, Synonym were added after the
-// initial format; observations written before them parse with empty
-// strings for those fields).
+// missing fields so older observation files (or hand-edited ones) parse
+// with zero values where keys are absent.
 func parseObservation(raw []byte) (IssueState, error) {
 	s := string(raw)
 	if !strings.HasPrefix(s, "---\n") {
@@ -352,15 +352,26 @@ func parseObservation(raw []byte) (IssueState, error) {
 			case "closed":
 				state.Status = IssueClosed
 			}
-		case "Updated":
-			t, err := time.Parse(time.RFC3339, val)
-			if err == nil {
-				state.Updated = t
-			}
+		case "Term":
+			state.Term = val
 		case "Canonical":
 			state.Canonical = val
-		case "Synonym":
-			state.Synonym = val
+		case "Files":
+			n, _ := strconv.Atoi(val)
+			state.Files = n
+		case "Occurrences":
+			n, _ := strconv.Atoi(val)
+			state.Occurrences = n
+		case "First seen":
+			if t, err := time.Parse(time.RFC3339, val); err == nil {
+				state.FirstSeen = t
+			}
+		case "Last reviewed":
+			if t, err := time.Parse(time.RFC3339, val); err == nil {
+				state.LastReviewed = t
+			}
+		case "Closed reason":
+			state.ClosedReason = val
 		}
 	}
 	state.Body = body

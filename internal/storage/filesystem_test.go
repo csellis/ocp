@@ -153,16 +153,18 @@ func TestAllIssueRefs(t *testing.T) {
 
 	// File two: one open, one closed.
 	open := IssueState{
-		Ref:     IssueRef{Number: 1, Path: "0001-open.md"},
-		Status:  IssueOpen,
-		Updated: now,
-		Body:    "open obs",
+		Ref:          IssueRef{Number: 1, Path: "0001-open.md"},
+		Status:       IssueOpen,
+		FirstSeen:    now,
+		LastReviewed: now,
+		Body:         "open obs",
 	}
 	closed := IssueState{
-		Ref:     IssueRef{Number: 2, Path: "0002-closed.md"},
-		Status:  IssueClosed,
-		Updated: now,
-		Body:    "closed obs",
+		Ref:          IssueRef{Number: 2, Path: "0002-closed.md"},
+		Status:       IssueClosed,
+		FirstSeen:    now,
+		LastReviewed: now,
+		Body:         "closed obs",
 	}
 	if err := fs.RecordIssueState(ctx, testRepo, open); err != nil {
 		t.Fatalf("record open: %v", err)
@@ -207,12 +209,15 @@ func TestLoadIssue_RoundTrip(t *testing.T) {
 	now := mustTime(t, "2026-04-26T10:00:00Z")
 
 	want := IssueState{
-		Ref:       IssueRef{Number: 7, Path: "0007-vocab-glossary.md"},
-		Status:    IssueOpen,
-		Updated:   now,
-		Body:      "Hello.\n\nObservation body here.",
-		Canonical: "glossary",
-		Synonym:   "vocabulary",
+		Ref:          IssueRef{Number: 7, Path: "0007-vocab-glossary.md"},
+		Status:       IssueOpen,
+		Term:         "vocabulary",
+		Canonical:    "glossary",
+		Files:        4,
+		Occurrences:  47,
+		FirstSeen:    now,
+		LastReviewed: now,
+		Body:         "# vocabulary -> glossary\n\nUsed in 4 files (47 occurrences):\n\n- doc.md: 1, 2, 3\n",
 	}
 	if err := fs.RecordIssueState(ctx, testRepo, want); err != nil {
 		t.Fatalf("record: %v", err)
@@ -228,16 +233,22 @@ func TestLoadIssue_RoundTrip(t *testing.T) {
 	if got.Status != want.Status {
 		t.Errorf("Status: want %v got %v", want.Status, got.Status)
 	}
-	if !got.Updated.Equal(want.Updated) {
-		t.Errorf("Updated: want %v got %v", want.Updated, got.Updated)
+	if got.Term != want.Term {
+		t.Errorf("Term: want %q got %q", want.Term, got.Term)
 	}
 	if got.Canonical != want.Canonical {
 		t.Errorf("Canonical: want %q got %q", want.Canonical, got.Canonical)
 	}
-	if got.Synonym != want.Synonym {
-		t.Errorf("Synonym: want %q got %q", want.Synonym, got.Synonym)
+	if got.Files != want.Files || got.Occurrences != want.Occurrences {
+		t.Errorf("Files/Occurrences: want %d/%d got %d/%d", want.Files, want.Occurrences, got.Files, got.Occurrences)
 	}
-	if !strings.Contains(got.Body, "Observation body here") {
+	if !got.FirstSeen.Equal(want.FirstSeen) {
+		t.Errorf("FirstSeen: want %v got %v", want.FirstSeen, got.FirstSeen)
+	}
+	if !got.LastReviewed.Equal(want.LastReviewed) {
+		t.Errorf("LastReviewed: want %v got %v", want.LastReviewed, got.LastReviewed)
+	}
+	if !strings.Contains(got.Body, "Used in 4 files") {
 		t.Errorf("Body missing content: %q", got.Body)
 	}
 }
@@ -249,10 +260,11 @@ func TestLoadIssue_FromClosedDir(t *testing.T) {
 	now := mustTime(t, "2026-04-26T10:00:00Z")
 
 	state := IssueState{
-		Ref:     IssueRef{Number: 1, Path: "0001-foo.md"},
-		Status:  IssueClosed,
-		Updated: now,
-		Body:    "closed",
+		Ref:          IssueRef{Number: 1, Path: "0001-foo.md"},
+		Status:       IssueClosed,
+		FirstSeen:    now,
+		LastReviewed: now,
+		Body:         "closed",
 	}
 	if err := fs.RecordIssueState(ctx, testRepo, state); err != nil {
 		t.Fatalf("record: %v", err)
@@ -281,10 +293,15 @@ func TestIssueLifecycle(t *testing.T) {
 	now := mustTime(t, "2026-04-26T10:00:00Z")
 
 	open := IssueState{
-		Ref:     IssueRef{Number: 1, Path: "0001-eval-vs-assessment.md"},
-		Status:  IssueOpen,
-		Updated: now,
-		Body:    "Hello.\n\nNoticed `eval` and `assessment` in the same file.\n\n— *Drone Honor Thy Error*",
+		Ref:          IssueRef{Number: 1, Path: "0001-eval-vs-assessment.md"},
+		Status:       IssueOpen,
+		Term:         "assessment",
+		Canonical:    "eval",
+		Files:        1,
+		Occurrences:  1,
+		FirstSeen:    now,
+		LastReviewed: now,
+		Body:         "# assessment -> eval\n\nUsed in 1 file (1 occurrence):\n\n- foo.go: 42\n",
 	}
 	if err := fs.RecordIssueState(ctx, testRepo, open); err != nil {
 		t.Fatalf("create: %v", err)
@@ -305,18 +322,30 @@ func TestIssueLifecycle(t *testing.T) {
 
 	closed := open
 	closed.Status = IssueClosed
-	closed.Updated = mustTime(t, "2026-04-26T11:00:00Z")
-	closed.Body = open.Body + "\n\nClosed: glossary updated to canonicalize `eval`."
+	closed.LastReviewed = mustTime(t, "2026-04-26T11:00:00Z")
+	closed.ClosedReason = "glossary updated to canonicalize `eval`"
 	if err := fs.RecordIssueState(ctx, testRepo, closed); err != nil {
 		t.Fatalf("close: %v", err)
 	}
 
-	if _, err := os.Stat(openPath); !errors.Is(err, os.ErrNotExist) {
-		t.Errorf("expected open file removed after close, stat err: %v", err)
+	// File stays in conversation/; status changes via frontmatter only.
+	if _, err := os.Stat(openPath); err != nil {
+		t.Errorf("expected file at %s after close, stat err: %v", openPath, err)
 	}
-	closedPath := filepath.Join(root, ".ocp", "conversation", "closed", "0001-eval-vs-assessment.md")
-	if _, err := os.Stat(closedPath); err != nil {
-		t.Fatalf("expected closed file at %s: %v", closedPath, err)
+	closedDir := filepath.Join(root, ".ocp", "conversation", "closed")
+	if _, err := os.Stat(closedDir); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("conversation/closed/ should not be created; stat err: %v", err)
+	}
+
+	got, err := fs.LoadIssue(ctx, testRepo, closed.Ref)
+	if err != nil {
+		t.Fatalf("LoadIssue after close: %v", err)
+	}
+	if got.Status != IssueClosed {
+		t.Errorf("Status: want IssueClosed, got %v", got.Status)
+	}
+	if got.ClosedReason != closed.ClosedReason {
+		t.Errorf("ClosedReason: want %q, got %q", closed.ClosedReason, got.ClosedReason)
 	}
 
 	refs, err = fs.LoadOpenIssues(ctx, testRepo)
@@ -324,7 +353,7 @@ func TestIssueLifecycle(t *testing.T) {
 		t.Fatalf("LoadOpenIssues after close: %v", err)
 	}
 	if len(refs) != 0 {
-		t.Errorf("expected no open issues after close, got %v", refs)
+		t.Errorf("expected no open refs after close, got %v", refs)
 	}
 }
 

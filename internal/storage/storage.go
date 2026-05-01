@@ -74,14 +74,21 @@ const (
 )
 
 // IssueState is the full state of one observation as held in storage.
-// Body is the rendered observation text; Canonical and Synonym record
-// the drift event the observation concerns (so respond can update the
-// glossary without reparsing the body).
+//
+// Mode A observations are structured records: frontmatter holds every
+// field the TUI displays; Body holds only the citations (file:line
+// list) for human reading and `ocp respond [d]etails`. The OCP voice
+// (Hello/Card/ship-name) does not appear in Mode A; it returns in
+// Mode B (v0.2 GitHub issue bodies) where the audience is prose.
 type IssueState struct {
-	Ref       IssueRef
-	Status    IssueStatus
-	Updated   time.Time
-	Body      string
-	Canonical string // glossary canonical the observation references
-	Synonym   string // synonym whose use triggered the observation
+	Ref          IssueRef
+	Status       IssueStatus
+	Term         string    // synonym whose use triggered the observation
+	Canonical    string    // glossary canonical the observation references
+	Files        int       // distinct files containing the synonym
+	Occurrences  int       // total occurrences across those files
+	FirstSeen    time.Time // when drift created this observation
+	LastReviewed time.Time // when respond last prompted on this observation
+	ClosedReason string    // empty unless Status == IssueClosed
+	Body         string    // citations markdown
 }

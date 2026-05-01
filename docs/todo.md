@@ -11,12 +11,62 @@ Maintainer scratchpad. Not a roadmap. For the roadmap, see `docs/PLAN.md`.
       tags, `errgroup`, `context.Context` propagation) rather than the
       TS/SvelteKit defaults the skill assumes.
 
-- [ ] Add `.github/workflows/` for release builds. Releases are NOT CI/CD;
-      commits to `main` flow freely. A release is cut manually (tag push or
-      `workflow_dispatch`) and the workflow produces signed binaries for
-      darwin/arm64, darwin/amd64, linux/amd64, linux/arm64 and attaches them
-      to the GitHub Release. Decide between `goreleaser` (fast, conventional)
-      and a hand-rolled matrix workflow (one fewer dependency, more code).
+- [x] Add `.github/workflows/` for release builds. Shipped in `cc3b04b`
+      (`goreleaser`-driven, gated on tag push or `workflow_dispatch`,
+      multi-arch binaries attached to GitHub Release). v0.1.0 published
+      via this pipeline.
+
+## v0.1.x cleanup
+
+### NEXT — bubbletea migration for the interactive surface
+
+- [ ] **DO THIS FIRST.** Migrate the home menu and `ocp respond` TUI
+      from line-buffered `bufio.Reader` + `fmt.Fprintln` to a real TUI
+      library: `github.com/charmbracelet/bubbletea`.
+
+      Why: line-buffered terminal mode means bare ESC is invisible to
+      the program (the byte sits in the kernel buffer, no read fires
+      until Enter). Workarounds (empty-enter cancel, raw-mode-only-at-
+      menu) all hit the same wall — sub-prompts where you type a reason
+      or term still don't get ESC. Real ESC requires raw mode; raw mode
+      breaks line editing unless you re-implement it; bubbletea has
+      already done that work.
+
+      Wins beyond ESC:
+      - Real navigation (arrow keys, ESC, ctrl-c) at every prompt
+      - Redraw on every keystroke; legend / status updates in place
+      - Scroll regions for [d]etails (no more bottom-of-screen vomit)
+      - Cleaner separation of model / view / update (Elm-architecture)
+      - Foundation for v0.2 polish (multi-pane, live status during
+        long drift runs, etc.)
+
+      Migration scope:
+      - Home (status block + action menu) becomes a bubbletea Model
+      - Respond (legend + per-observation walk + sub-prompts) is a
+        second Model that runs as a child program
+      - File-Reply path (`--from-file`) stays untouched; bubbletea
+        only owns the interactive front-end
+      - Tests: bubbletea has a `tea.NewProgram(...).Run()` test mode
+        with scripted input. Existing TUI unit tests rewrite to drive
+        the Model directly (Init/Update with simulated tea.Msg values),
+        which is cleaner than current bufio scripting.
+      - Dep: bubbletea + lipgloss (styling) + bubbles (input field).
+        Reasonable for a TUI app; biggest dep we have aside from cobra.
+
+      Estimate: ~5 sprint points. Half a day to spike the home Model;
+      half a day to migrate respond; rest is polish + test rewrite.
+
+      Reference: https://github.com/charmbracelet/bubbletea
+
+- [ ] (Old, superseded by NEXT above): TUI for `ocp respond`. Today's
+      bufio-based TUI shipped in slice 9 but ESC doesn't work in
+      line-buffered mode. Bubbletea migration replaces it.
+
+- [ ] Re-running `ocp drift` after scout changes does not refresh
+      existing observation files (dedupe-by-slug skips them). The only
+      way to regenerate is `rm -rf .ocp/conversation/`. Either add
+      `--regenerate` or make dedupe content-aware (recompute body, write
+      if changed).
 
 - [ ] Build a release-drift backpressure harness. Goal: keep moving fast on
       `main`, but raise the urgency to cut a release as the lag from the last

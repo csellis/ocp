@@ -3,7 +3,6 @@ package main
 import (
 	"bytes"
 	"context"
-	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -177,12 +176,16 @@ func TestRunDrift_FilesObservations(t *testing.T) {
 	s := string(content)
 	for _, want := range []string{
 		"Status: open",
-		"Hello.",
-		"canonicalizes this concept as `glossary`",
+		"Term: vocabulary",
+		"Canonical: glossary",
+		"Files: 2",
+		"Occurrences: 2",
+		"First seen:",
+		"Last reviewed:",
+		"# vocabulary -> glossary",
 		"docs/a.md",
 		"docs/b.md",
-		"2 files (2 occurrences)",
-		"— *Drone Honor Thy Error As A Hidden Intention*",
+		"Used in 2 files (2 occurrences)",
 	} {
 		if !strings.Contains(s, want) {
 			t.Errorf("missing %q in %s:\n%s", want, vocabFile, s)
@@ -474,7 +477,7 @@ func TestRunRespond_NoOpenIssues(t *testing.T) {
 		t.Fatalf("seed: %v", err)
 	}
 	var buf bytes.Buffer
-	if err := runRespond(ctx, &buf, root, fixedNow); err != nil {
+	if err := runRespond(ctx, &buf, root, fixedNow, filePrompt); err != nil {
 		t.Fatalf("runRespond: %v", err)
 	}
 	if !strings.Contains(buf.String(), "no open observations") {
@@ -485,7 +488,7 @@ func TestRunRespond_NoOpenIssues(t *testing.T) {
 func TestRunRespond_NoGlossary(t *testing.T) {
 	root := t.TempDir()
 	var buf bytes.Buffer
-	if err := runRespond(context.Background(), &buf, root, fixedNow); err != nil {
+	if err := runRespond(context.Background(), &buf, root, fixedNow, filePrompt); err != nil {
 		t.Fatalf("runRespond: %v", err)
 	}
 	if !strings.Contains(buf.String(), "no glossary") {
@@ -528,22 +531,22 @@ func TestRunRespond_CloseAction(t *testing.T) {
 
 	var buf bytes.Buffer
 	later := fixedNow.Add(1 * time.Hour)
-	if err := runRespond(ctx, &buf, root, later); err != nil {
+	if err := runRespond(ctx, &buf, root, later, filePrompt); err != nil {
 		t.Fatalf("runRespond: %v", err)
 	}
 	if !strings.Contains(buf.String(), "1 closed") {
 		t.Errorf("expected '1 closed', got:\n%s", buf.String())
 	}
 
-	if _, err := os.Stat(obsPath); !errors.Is(err, os.ErrNotExist) {
-		t.Errorf("open observation should be gone after close, stat err: %v", err)
-	}
-	closedPath := filepath.Join(convDir, "closed", obs)
-	closedBytes, err := os.ReadFile(closedPath)
+	// File stays at the same path; status changes via frontmatter.
+	closedBytes, err := os.ReadFile(obsPath)
 	if err != nil {
-		t.Fatalf("expected closed observation: %v", err)
+		t.Fatalf("expected file to remain at %s: %v", obsPath, err)
 	}
-	if !strings.Contains(string(closedBytes), "Closed: pedagogical use") {
+	if !strings.Contains(string(closedBytes), "Status: closed") {
+		t.Errorf("expected Status: closed in frontmatter:\n%s", closedBytes)
+	}
+	if !strings.Contains(string(closedBytes), "Closed reason: pedagogical use") {
 		t.Errorf("missing closure note in:\n%s", closedBytes)
 	}
 }
@@ -585,7 +588,7 @@ func TestRunRespond_SynonymAction(t *testing.T) {
 	}
 
 	var buf bytes.Buffer
-	if err := runRespond(ctx, &buf, root, fixedNow); err != nil {
+	if err := runRespond(ctx, &buf, root, fixedNow, filePrompt); err != nil {
 		t.Fatalf("runRespond: %v", err)
 	}
 	out := buf.String()
@@ -610,7 +613,7 @@ func TestRunRespond_NoReplySkips(t *testing.T) {
 	}
 
 	var buf bytes.Buffer
-	if err := runRespond(ctx, &buf, root, fixedNow); err != nil {
+	if err := runRespond(ctx, &buf, root, fixedNow, filePrompt); err != nil {
 		t.Fatalf("runRespond: %v", err)
 	}
 	if !strings.Contains(buf.String(), "1 skipped") {

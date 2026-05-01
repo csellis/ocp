@@ -19,10 +19,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/csellis/ocp/internal/names"
 	"github.com/csellis/ocp/internal/scout"
 	"github.com/csellis/ocp/internal/storage"
-	"github.com/csellis/ocp/internal/voice"
 )
 
 // Build-time metadata. Overridden via -ldflags "-X main.version=..." by
@@ -42,11 +40,33 @@ canonical names a team has agreed on for the concepts in their domain.
 OCP does not write code. It surfaces single observations and updates
 its own .ocp/ state. The blast radius is bounded by design.
 
+Run "ocp" with no subcommand for the interactive home menu (when stdin
+is a terminal); the home menu shows project state and lets you pick an
+action. Subcommands work directly for scripts and CI.
+
 For the thesis and architecture, see docs/THESIS.md and docs/ARCHITECTURE.md.
 For the build roadmap, see docs/PLAN.md.`,
 	Version:       fmt.Sprintf("%s (commit %s, built %s)", version, commit, date),
 	SilenceUsage:  true,
 	SilenceErrors: true,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		if len(args) > 0 {
+			// Unknown subcommand. Let cobra print its help and exit
+			// non-zero by returning the standard error.
+			return fmt.Errorf("unknown command %q for %q", args[0], cmd.CommandPath())
+		}
+		if !isTerminal(os.Stdin) {
+			// Piped or scripted: print the standard help. Preserves the
+			// pre-home-menu behavior so existing scripts don't see a
+			// surprise interactive prompt.
+			return cmd.Help()
+		}
+		cwd, err := os.Getwd()
+		if err != nil {
+			return fmt.Errorf("cwd: %w", err)
+		}
+		return runHome(cmd.Context(), cwd, cmd.OutOrStdout(), os.Stdin)
+	},
 }
 
 var scanCmd = &cobra.Command{
@@ -227,16 +247,23 @@ func runDrift(ctx context.Context, out io.Writer, root string, now time.Time) er
 			skipCount++
 			continue
 		}
+		totalLines := 0
+		for _, f := range c.Files {
+			totalLines += len(f.Lines)
+		}
 		state := storage.IssueState{
 			Ref: storage.IssueRef{
 				Number: nextNumber,
 				Path:   fmt.Sprintf("%04d-%s.md", nextNumber, slug),
 			},
-			Status:    storage.IssueOpen,
-			Updated:   now,
-			Body:      candidateBody(c),
-			Canonical: c.Canonical,
-			Synonym:   c.Synonym,
+			Status:       storage.IssueOpen,
+			Term:         c.Synonym,
+			Canonical:    c.Canonical,
+			Files:        len(c.Files),
+			Occurrences:  totalLines,
+			FirstSeen:    now,
+			LastReviewed: now,
+			Body:         candidateBody(c),
 		}
 		if err := fs.RecordIssueState(ctx, storage.RepoID(""), state); err != nil {
 			return fmt.Errorf("write observation %s: %w", state.Ref.Path, err)
@@ -327,18 +354,33 @@ func groupHits(hits []scout.Hit) []candidate {
 	return result
 }
 
+// candidateBody renders the citations-only Mode A body. The TUI reads
+// metadata from frontmatter, so the body is purely human-facing detail:
+// a one-line header plus the file:lines list. The OCP voice template
+// (internal/voice) and ship-name signature (internal/names) are not
+// used in Mode A; they return in Mode B (v0.2 GitHub issue bodies).
 func candidateBody(c candidate) string {
-	files := make([]voice.FileCitation, len(c.Files))
-	for i, f := range c.Files {
-		files[i] = voice.FileCitation{File: f.File, Lines: f.Lines}
+	totalLines := 0
+	for _, f := range c.Files {
+		totalLines += len(f.Lines)
 	}
-	return voice.Format(voice.Body{
-		Synonym:   c.Synonym,
-		Canonical: c.Canonical,
-		Files:     files,
-		Card:      voice.PickCard(),
-		ShipName:  names.Default(),
-	})
+	var b strings.Builder
+	fmt.Fprintf(&b, "# %s -> %s\n\n", c.Synonym, c.Canonical)
+	fmt.Fprintf(&b, "Used in %d %s (%d %s):\n\n",
+		len(c.Files), pluralize("file", len(c.Files)),
+		totalLines, pluralize("occurrence", totalLines))
+	for _, f := range c.Files {
+		fmt.Fprintf(&b, "- %s:", f.File)
+		for i, ln := range f.Lines {
+			if i == 0 {
+				fmt.Fprintf(&b, " %d", ln)
+			} else {
+				fmt.Fprintf(&b, ", %d", ln)
+			}
+		}
+		b.WriteByte('\n')
+	}
+	return b.String()
 }
 
 // slugify returns a filesystem-safe lowercase slug. Non-alphanumeric
@@ -375,198 +417,26 @@ func slugFromPath(path string) string {
 	return base
 }
 
+// pluralize turns a singular noun into its plural form when n != 1.
+// Handles the consonant+y case (entry -> entries); naive +s otherwise.
+// English has more rules; add as needed.
 func pluralize(s string, n int) string {
 	if n == 1 {
 		return s
 	}
+	if len(s) >= 2 {
+		last := s[len(s)-1]
+		secondLast := s[len(s)-2]
+		if last == 'y' && !isVowel(secondLast) {
+			return s[:len(s)-1] + "ies"
+		}
+	}
 	return s + "s"
 }
 
-var respondCmd = &cobra.Command{
-	Use:   "respond",
-	Short: "Read replies on open observations and apply close / synonym actions.",
-	Long: `Respond walks every open observation in .ocp/conversation/ and looks
-for a "## Reply" section the maintainer has appended to the body.
-
-Recognized reply formats (case-insensitive):
-
-  close: <reason>      Close the observation. The reason is appended to
-                       the body and the file moves to conversation/closed/.
-  synonym: <term>      Add <term> as a declared synonym of the
-                       observation's canonical, then close the
-                       observation with a closure note.
-  stand by             Leave the observation open. No state change.
-
-Observations without a Reply section (or with an unrecognized reply)
-are skipped silently. The summary line reports counts per outcome.
-
-This v0.1 surface is a keyword parser. v0.2 replaces it with the
-LLM-driven conversation loop the architecture describes.
-
-Exit codes:
-  0  success
-  1  unrecoverable error (unreadable observation, glossary write failure)`,
-	RunE: func(cmd *cobra.Command, _ []string) error {
-		cwd, err := os.Getwd()
-		if err != nil {
-			return fmt.Errorf("cwd: %w", err)
-		}
-		return runRespond(cmd.Context(), cmd.OutOrStdout(), cwd, time.Now().UTC())
-	},
-}
-
-type replyAction struct {
-	kind  replyKind
-	value string
-}
-
-type replyKind int
-
-const (
-	replyNone replyKind = iota
-	replyClose
-	replySynonym
-	replyStandBy
-)
-
-// parseReply scans an observation body for a "## Reply" section and
-// extracts the recognized intent. Anything outside the recognized
-// keyword set returns replyNone (the run skips silently).
-func parseReply(body string) replyAction {
-	var replyLines []string
-	inReply := false
-	for _, line := range strings.Split(body, "\n") {
-		if strings.HasPrefix(line, "## ") {
-			heading := strings.TrimSpace(strings.ToLower(line[3:]))
-			if heading == "reply" {
-				inReply = true
-				continue
-			}
-			if inReply {
-				break
-			}
-		}
-		if inReply {
-			replyLines = append(replyLines, line)
-		}
-	}
-	if !inReply {
-		return replyAction{kind: replyNone}
-	}
-	text := strings.TrimSpace(strings.Join(replyLines, "\n"))
-	if text == "" {
-		return replyAction{kind: replyNone}
-	}
-	lower := strings.ToLower(text)
-	switch {
-	case strings.HasPrefix(lower, "close:"):
-		return replyAction{kind: replyClose, value: strings.TrimSpace(text[len("close:"):])}
-	case strings.HasPrefix(lower, "synonym:"):
-		return replyAction{kind: replySynonym, value: strings.TrimSpace(text[len("synonym:"):])}
-	case strings.HasPrefix(lower, "stand by"):
-		return replyAction{kind: replyStandBy}
-	}
-	return replyAction{kind: replyNone}
-}
-
-func runRespond(ctx context.Context, out io.Writer, root string, now time.Time) error {
-	fs := storage.New(root)
-	g, err := fs.LoadGlossary(ctx, storage.RepoID(""))
-	if err != nil {
-		if errors.Is(err, storage.ErrNotFound) {
-			fmt.Fprintln(out, "no glossary at .ocp/glossary.md; nothing to respond to")
-			return nil
-		}
-		return fmt.Errorf("load glossary: %w", err)
-	}
-
-	refs, err := fs.LoadOpenIssues(ctx, storage.RepoID(""))
-	if err != nil {
-		return fmt.Errorf("list open issues: %w", err)
-	}
-	if len(refs) == 0 {
-		fmt.Fprintln(out, "no open observations")
-		return nil
-	}
-
-	var (
-		closedCount, glossaryUpdates, skipped int
-		actions                               []string
-	)
-	for _, ref := range refs {
-		state, err := fs.LoadIssue(ctx, storage.RepoID(""), ref)
-		if err != nil {
-			return fmt.Errorf("load %s: %w", ref.Path, err)
-		}
-		action := parseReply(state.Body)
-		switch action.kind {
-		case replyNone, replyStandBy:
-			skipped++
-		case replyClose:
-			state.Status = storage.IssueClosed
-			state.Updated = now
-			state.Body = strings.TrimRight(state.Body, "\n") + "\n\nClosed: " + action.value + "\n"
-			if err := fs.RecordIssueState(ctx, storage.RepoID(""), state); err != nil {
-				return fmt.Errorf("close %s: %w", ref.Path, err)
-			}
-			closedCount++
-			actions = append(actions, fmt.Sprintf("closed %s: %s", ref.Path, action.value))
-		case replySynonym:
-			updated := addSynonymTo(&g, state.Canonical, action.value)
-			if updated {
-				if err := fs.SaveGlossary(ctx, storage.RepoID(""), g); err != nil {
-					return fmt.Errorf("save glossary: %w", err)
-				}
-				glossaryUpdates++
-			}
-			state.Status = storage.IssueClosed
-			state.Updated = now
-			note := fmt.Sprintf("Closed: added `%s` as synonym of `%s`.", action.value, state.Canonical)
-			if !updated {
-				note = fmt.Sprintf("Closed: `%s` was already a synonym of `%s`.", action.value, state.Canonical)
-			}
-			state.Body = strings.TrimRight(state.Body, "\n") + "\n\n" + note + "\n"
-			if err := fs.RecordIssueState(ctx, storage.RepoID(""), state); err != nil {
-				return fmt.Errorf("close %s: %w", ref.Path, err)
-			}
-			closedCount++
-			actions = append(actions, fmt.Sprintf("synonym `%s` -> `%s`, closed %s", action.value, state.Canonical, ref.Path))
-		}
-	}
-
-	fmt.Fprintf(out, "respond: %d open, %d closed, %d glossary updates, %d skipped\n",
-		len(refs), closedCount, glossaryUpdates, skipped)
-
-	if closedCount > 0 || glossaryUpdates > 0 {
-		var body strings.Builder
-		body.WriteString("respond:")
-		for _, a := range actions {
-			fmt.Fprintf(&body, "\n- %s", a)
-		}
-		if err := fs.AppendLog(ctx, storage.RepoID(""), storage.LogEntry{
-			At:   now,
-			Body: body.String(),
-		}); err != nil {
-			return fmt.Errorf("append log: %w", err)
-		}
-	}
-	return nil
-}
-
-// addSynonymTo mutates g in place, adding term to the synonym list of
-// the given canonical. Returns true if the glossary changed (canonical
-// found and term not already present), false otherwise.
-func addSynonymTo(g *storage.Glossary, canonical, term string) bool {
-	for i, t := range g.Terms {
-		if t.Canonical != canonical {
-			continue
-		}
-		for _, s := range t.Synonyms {
-			if s == term {
-				return false
-			}
-		}
-		g.Terms[i].Synonyms = append(g.Terms[i].Synonyms, term)
+func isVowel(b byte) bool {
+	switch b {
+	case 'a', 'e', 'i', 'o', 'u':
 		return true
 	}
 	return false
